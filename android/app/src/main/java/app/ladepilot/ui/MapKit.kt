@@ -191,34 +191,44 @@ internal class MapHolder(ctx: Context, onTap: (Site) -> Unit) {
         }
     }
 
+    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    @Volatile private var generation = 0
+
+    /** Recomputes the visible price pins off the main thread. */
     fun refresh() {
         val prof = profile ?: return
         if (view.width == 0) { view.post { refresh() }; return }
         val bb = view.boundingBox
         val stops = plan?.stops?.map { it.cand.site.id }?.toSet() ?: emptySet()
-        val now = System.currentTimeMillis()
-        val vis = ArrayList<Pair<Site, app.ladepilot.data.Quote?>>()
-        for (s in DataRepo.sites) {
-            if (s.lat < bb.latSouth || s.lat > bb.latNorth || s.lon < bb.lonWest || s.lon > bb.lonEast) continue
-            if (s.maxKw < minKw && s.id !in stops) continue
-            vis += s to Pricing.quote(s, minKw, prof, now)
+        val kw = minKw
+        val gen = ++generation
+        worker.execute {
+            val now = System.currentTimeMillis()
+            val vis = ArrayList<Pair<Site, app.ladepilot.data.Quote?>>()
+            for (s in DataRepo.sites) {
+                if (s.lat < bb.latSouth || s.lat > bb.latNorth || s.lon < bb.lonWest || s.lon > bb.lonEast) continue
+                if (s.maxKw < kw && s.id !in stops) continue
+                vis += s to Pricing.quote(s, kw, prof, now)
+            }
+            val priced = vis.filter { it.second != null && it.first.id !in stops }.sortedBy { it.second!!.eur }
+            val bestEur = priced.firstOrNull { !it.second!!.free }?.second?.eur
+            val best = priced.filter { !it.second!!.free }.take(5)
+                .filter { bestEur != null && it.second!!.eur <= bestEur + 0.03 }.map { it.first.id }.toSet()
+            val ordered = vis.filter { it.first.id in stops } + priced.take(350) +
+                vis.filter { it.second == null && it.first.id !in stops }.take(50)
+            val list = ordered.map { (s, q) ->
+                val av = Pricing.availability(s, kw)
+                Pin(
+                    s,
+                    q?.let { Pricing.labelQ(s, it) + if (s.cur == "HUF") " Ft" else "" } ?: "–",
+                    powerArgb(s.maxKw),
+                    if (s.id in stops) 2 else if (s.id in best) 1 else 0,
+                    dim = av != null && av.free == 0,
+                )
+            }
+            view.post {
+                if (gen == generation) { pins.pins = list; view.invalidate() }
+            }
         }
-        val priced = vis.filter { it.second != null && it.first.id !in stops }.sortedBy { it.second!!.eur }
-        val bestEur = priced.firstOrNull { !it.second!!.free }?.second?.eur
-        val best = priced.filter { !it.second!!.free }.take(5)
-            .filter { bestEur != null && it.second!!.eur <= bestEur + 0.03 }.map { it.first.id }.toSet()
-        val ordered = vis.filter { it.first.id in stops } + priced.take(600) +
-            vis.filter { it.second == null && it.first.id !in stops }.take(80)
-        pins.pins = ordered.map { (s, q) ->
-            val av = Pricing.availability(s, minKw)
-            Pin(
-                s,
-                q?.let { Pricing.labelQ(s, it) + if (s.cur == "HUF") " Ft" else "" } ?: "–",
-                powerArgb(s.maxKw),
-                if (s.id in stops) 2 else if (s.id in best) 1 else 0,
-                dim = av != null && av.free == 0,
-            )
-        }
-        view.invalidate()
     }
 }

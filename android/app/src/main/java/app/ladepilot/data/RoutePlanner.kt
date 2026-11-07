@@ -232,68 +232,75 @@ object RoutePlanner {
                 (if (kwhBat > 0) (c.site.startFeeLocal ?: 0.0) / c.site.fx else 0.0)
             val st = ChargeStop(c, eta, arrival, target, kwhBat, kwhBat * loss, mins, q, cost)
             stops += st
-            delaySec += mins * 60 + detourSec(c)
+            delaySec += mins * 60 + detourSec(c) + 300
             pos = c.alongKm
             soc = target - c.offKm * 1.3 * socPerKm
         }
 
-        // ---- 5b. automatic stops for whatever is still missing
-        var guard = 0
-        while (guard++ < 6) {
-            val socAtDest = soc - (totalKm - pos) * socPerKm
-            if (socAtDest >= reserve) break
-            val reachKm = pos + (soc - reserve) / socPerKm
-            val options = cands.filter {
-                it.alongKm > pos + 3 && it.alongKm + it.offKm * 1.3 <= reachKm && it.site.id !in excludedIds
-            }
-            if (options.isEmpty()) {
-                feasible = false
-                note = "A tartalék megtartásával nincs elérhető ${profile.routeMinKw}+ kW-os töltő az útvonalon. Tölts többet indulás előtt, vagy csökkentsd a minimális teljesítményt a profilban."
-                break
-            }
-            fun evaluate(strict: Boolean): List<StopOption> = options.mapNotNull { c ->
-                val eta = startMillis + ((c.routeSec + delaySec) * 1000).toLong()
-                val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta) ?: return@mapNotNull null
-                val arrival = soc - (c.alongKm - pos + c.offKm * 1.3) * socPerKm
-                // only stop where charging is actually needed (no "top up 1 %" stops)
-                if (strict && arrival > 60.0) return@mapNotNull null
-                val need = reserve + (totalKm - c.alongKm + c.offKm * 1.3) * socPerKm + 2.0
-                val target = ceil(min(max(need, arrival + 10), maxSoc))
-                if (strict && target - arrival < 10) return@mapNotNull null
-                val kwhBat = (target - arrival) / 100.0 * cap
-                val billed = kwhBat * loss
-                val mins = chargeMinutes(arrival, target, q.kw, cap)
-                val cost = billed * q.energyEur + (q.eurMin ?: 0.0) * mins +
-                    ((c.site.startFeeLocal ?: 0.0) / c.site.fx)
-                StopOption(
-                    ChargeStop(c, eta, arrival, target, kwhBat, billed, mins, q, cost),
-                    lostMin = mins + detourSec(c) / 60, extraStop = need > maxSoc,
-                )
-            }
-            var evals = evaluate(strict = true)
-            if (evals.isEmpty()) evals = evaluate(strict = false)
-            val chosen = when {
-                evals.isEmpty() -> null
-                optimize == "time" -> {
-                    // fastest overall, but among options within 5 minutes of it take the cheapest
-                    fun lost(o: StopOption) = o.lostMin + if (o.extraStop) 25.0 else 0.0
-                    val fastest = evals.minOf { lost(it) }
-                    evals.filter { lost(it) <= fastest + 5.0 }.minByOrNull { it.stop.quote.eur }
+        // ---- 5b. automatic stops: search combinations of stops and pick the best whole trip
+        //      price mode: total cost (+ a little for time); time mode: total time (+ a little for cost)
+        val stopOverheadMin = 5.0
+        fun evaluate(pos0: Double, soc0: Double, delay0: Double, strict: Boolean): List<StopOption> {
+            val reachKm = pos0 + (soc0 - reserve) / socPerKm
+            return cands.asSequence()
+                .filter { it.alongKm > pos0 + 3 && it.alongKm + it.offKm * 1.3 <= reachKm && it.site.id !in excludedIds }
+                .mapNotNull { c ->
+                    val eta = startMillis + ((c.routeSec + delay0) * 1000).toLong()
+                    val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta) ?: return@mapNotNull null
+                    val arrival = soc0 - (c.alongKm - pos0 + c.offKm * 1.3) * socPerKm
+                    // only stop where charging is actually needed (no "top up 1 %" stops)
+                    if (strict && arrival > 60.0) return@mapNotNull null
+                    val need = reserve + (totalKm - c.alongKm + c.offKm * 1.3) * socPerKm + 2.0
+                    val target = ceil(min(max(need, arrival + 10), maxSoc))
+                    if (strict && target - arrival < 10) return@mapNotNull null
+                    val kwhBat = (target - arrival) / 100.0 * cap
+                    val billed = kwhBat * loss
+                    val mins = chargeMinutes(arrival, target, q.kw, cap)
+                    val cost = billed * q.energyEur + (q.eurMin ?: 0.0) * mins + ((c.site.startFeeLocal ?: 0.0) / c.site.fx)
+                    StopOption(ChargeStop(c, eta, arrival, target, kwhBat, billed, mins, q, cost),
+                        lostMin = mins + detourSec(c) / 60 + stopOverheadMin, extraStop = need > maxSoc)
+                }.toList()
+        }
+        fun score(cost: Double, minutes: Double) = if (optimize == "time") minutes + cost * 0.5 else cost + minutes * 0.1
+
+        class Tail(val stops: List<ChargeStop>, val cost: Double, val minutes: Double, val soc: Double, val pos: Double, val delay: Double)
+        fun search(pos0: Double, soc0: Double, delay0: Double, depth: Int): Tail? {
+            if (soc0 - (totalKm - pos0) * socPerKm >= reserve) return Tail(emptyList(), 0.0, 0.0, soc0, pos0, delay0)
+            if (depth >= 5) return null
+            var evals = evaluate(pos0, soc0, delay0, strict = true)
+            if (evals.isEmpty()) evals = evaluate(pos0, soc0, delay0, strict = false)
+            if (evals.isEmpty()) return null
+            val width = when (depth) { 0 -> 9; 1 -> 6; else -> 4 }
+            val pruned = if (evals.size <= width) evals else (
+                evals.sortedBy { it.stop.quote.eur }.take(width / 2 + 1) +
+                    evals.sortedBy { it.lostMin }.take(width / 3 + 1) +
+                    evals.sortedByDescending { it.stop.cand.alongKm }.take(width / 3 + 1)
+                ).distinct()
+            var best: Tail? = null
+            var bestScore = Double.MAX_VALUE
+            for (o in pruned) {
+                val st = o.stop
+                val rest = search(st.cand.alongKm, st.targetSoc - st.cand.offKm * 1.3 * socPerKm,
+                    delay0 + o.lostMin * 60, depth + 1) ?: continue
+                val cost = st.cost + rest.cost
+                val minutes = o.lostMin + rest.minutes
+                val sc = score(cost, minutes)
+                if (sc < bestScore) {
+                    bestScore = sc
+                    best = Tail(listOf(st) + rest.stops, cost, minutes, rest.soc, rest.pos, rest.delay)
                 }
-                else -> evals.minByOrNull {
-                    it.stop.quote.eur + (if (it.extraStop) 0.08 else 0.0) + it.stop.cand.offKm * 0.004 + it.stop.minutes * 0.0008
-                }
             }
-            val bestStop = chosen?.stop
-            val st = bestStop ?: run {
-                feasible = false
-                note = "Az elérhető töltőkhöz nincs árinformáció."
-                null
-            } ?: break
-            stops += st
-            delaySec += st.minutes * 60 + detourSec(st.cand)
-            pos = st.cand.alongKm
-            soc = st.targetSoc - st.cand.offKm * 1.3 * socPerKm
+            return best
+        }
+        val tail = search(pos, soc, delaySec, 0)
+        if (tail == null) {
+            feasible = false
+            note = "A tartalék megtartásával nincs elérhető ${profile.routeMinKw}+ kW-os töltő az útvonalon. Tölts többet indulás előtt, vagy csökkentsd a minimális teljesítményt a profilban."
+        } else {
+            stops += tail.stops
+            pos = tail.pos
+            soc = tail.soc
+            delaySec = tail.delay
         }
         val arrivalSoc = soc - (totalKm - pos) * socPerKm
         Plan(

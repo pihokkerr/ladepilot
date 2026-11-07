@@ -429,11 +429,11 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
     }
 
     val sheet = rememberBottomSheetScaffoldState(
-        bottomSheetState = rememberStandardBottomSheetState(initialValue = SheetValue.PartiallyExpanded, skipHiddenState = false)
+        bottomSheetState = rememberStandardBottomSheetState(initialValue = SheetValue.PartiallyExpanded, skipHiddenState = true)
     )
     BottomSheetScaffold(
         scaffoldState = sheet,
-        sheetPeekHeight = if (plan != null) 300.dp else 132.dp,
+        sheetPeekHeight = if (plan != null) 210.dp else 110.dp,
         sheetContainerColor = Card1,
         containerColor = Bg,
         sheetContent = {
