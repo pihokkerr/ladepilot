@@ -30,5 +30,5 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: >
-          npx --yes wrangler@3 kv key put at.json --path out/at.json
+          npx --yes wrangler@4 kv key put at.json --path out/at.json
           --namespace-id "${{ secrets.KV_NAMESPACE_ID }}" --remote
