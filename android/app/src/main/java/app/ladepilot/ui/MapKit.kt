@@ -1,47 +1,44 @@
 package app.ladepilot.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Point
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.view.MotionEvent
 import app.ladepilot.data.DataRepo
+import app.ladepilot.data.Geo
+import app.ladepilot.data.LocationHelper
 import app.ladepilot.data.Plan
 import app.ladepilot.data.Pricing
 import app.ladepilot.data.Profile
+import app.ladepilot.data.Quote
 import app.ladepilot.data.Site
-import org.osmdroid.config.Configuration
-import org.osmdroid.events.DelayedMapListener
-import org.osmdroid.events.MapListener
-import org.osmdroid.events.ScrollEvent
-import org.osmdroid.events.ZoomEvent
-import org.osmdroid.tileprovider.MapTileProviderBasic
-import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory
-import org.osmdroid.util.BoundingBox
-import org.osmdroid.util.GeoPoint
-import org.osmdroid.util.MapTileIndex
-import org.osmdroid.views.CustomZoomButtonsController
-import org.osmdroid.views.MapView
-import org.osmdroid.views.Projection
-import org.osmdroid.views.overlay.Overlay
-import org.osmdroid.views.overlay.Polyline
-import org.osmdroid.views.overlay.TilesOverlay
-import java.io.File
+import kotlinx.coroutines.flow.MutableStateFlow
+import org.maplibre.android.MapLibre
+import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
+import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapView
+import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.FeatureCollection
+import org.maplibre.geojson.LineString
+import org.maplibre.geojson.Point
+import java.util.concurrent.Executors
 
-private const val ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/"
-
-/** Esri tiles use z/y/x order. */
-private class EsriSource(name: String, layer: String) :
-    OnlineTileSourceBase(name, 0, 16, 256, "", arrayOf("$ESRI$layer/MapServer/tile/")) {
-    override fun getTileURLString(pMapTileIndex: Long): String =
-        baseUrl + MapTileIndex.getZoom(pMapTileIndex) + "/" + MapTileIndex.getY(pMapTileIndex) + "/" + MapTileIndex.getX(pMapTileIndex)
-}
+/** Vector map styles from OpenFreeMap – free, no API key. */
+private const val OFM = "https://tiles.openfreemap.org/styles/"
 
 internal fun powerArgb(kw: Int): Int = when {
     kw >= 250 -> 0xFFFF3B30.toInt()
@@ -50,236 +47,267 @@ internal fun powerArgb(kw: Int): Int = when {
     else -> 0xFF8A94A6.toInt()
 }
 
-/** kind: 0 normal, 1 among the cheapest in view, 2 planned stop */
-internal class Pin(val site: Site, val text: String, val color: Int, val kind: Int, val dim: Boolean)
+private fun hex(c: Int) = String.format("#%06X", c and 0xFFFFFF)
 
-/** Draws price pills directly on the canvas (fast enough for thousands of chargers). */
-internal class ChargerOverlay(private val onTap: (Site) -> Unit) : Overlay() {
-    /** in priority order: first = most important */
-    var pins: List<Pin> = emptyList()
-    var origin: GeoPoint? = null
-    var dest: GeoPoint? = null
-    var me: GeoPoint? = null
+/** A charger in the visible map area, for the "nearby" list. */
+internal data class NearItem(val site: Site, val quote: Quote, val distKm: Double)
 
-    private val placed = ArrayList<Pair<RectF, Site>>()
-    private val bg = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f }
-    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD; color = Color.WHITE }
-    private val dot = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val pt = Point()
-
-    override fun draw(c: Canvas, mv: MapView, shadow: Boolean) {
-        if (shadow) return
-        val proj = mv.projection
-        val d = mv.context.resources.displayMetrics.density
-        text.textSize = 13.5f * d
-        val zoom = mv.zoomLevelDouble
-        val h = 26 * d
-        val labels = ArrayList<Pair<RectF, Pin>>()
-        val dots = ArrayList<Triple<Float, Float, Pin>>()
-        for (p in pins) {
-            proj.toPixels(GeoPoint(p.site.lat, p.site.lon), pt)
-            if (pt.x < -60 || pt.y < -60 || pt.x > c.width + 60 || pt.y > c.height + 60) continue
-            val w = text.measureText(p.text) + 28 * d
-            val r = RectF(pt.x - w / 2, pt.y - h / 2, pt.x + w / 2, pt.y + h / 2)
-            val label = p.kind == 2 || (zoom >= 9.0 && labels.none { RectF.intersects(it.first, r) })
-            if (label) labels += r to p else dots += Triple(pt.x.toFloat(), pt.y.toFloat(), p)
-        }
-        for ((x, y, p) in dots) {
-            dot.color = p.color
-            dot.alpha = if (p.dim) 140 else 255
-            c.drawCircle(x, y, (if (p.site.maxKw >= 150) 4.5f else 3.5f) * d, dot)
-        }
-        placed.clear()
-        for ((r, p) in labels.asReversed()) {
-            bg.color = when (p.kind) { 2 -> 0xFF3E6AE1.toInt(); 1 -> 0xFF30D158.toInt(); else -> 0xF2161618.toInt() }
-            if (p.dim && p.kind == 0) bg.alpha = 170
-            c.drawRoundRect(r, h / 2, h / 2, bg)
-            stroke.color = 0x40FFFFFF
-            c.drawRoundRect(r, h / 2, h / 2, stroke)
-            dot.color = if (p.kind == 0) p.color else Color.WHITE
-            dot.alpha = 255
-            c.drawCircle(r.left + 12 * d, r.centerY(), 4.5f * d, dot)
-            text.color = if (p.kind == 1) 0xFF05250F.toInt() else Color.WHITE
-            c.drawText(p.text, r.left + 21 * d, r.centerY() + text.textSize * 0.36f, text)
-        }
-        for ((r, p) in labels) placed += r to p.site
-        origin?.let { end(c, proj, it, Color.WHITE, d) }
-        dest?.let { end(c, proj, it, 0xFFFF453A.toInt(), d) }
-        me?.let {
-            proj.toPixels(it, pt)
-            dot.color = 0x553E6AE1; c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 14 * d, dot)
-            dot.color = Color.WHITE; c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 8 * d, dot)
-            dot.color = 0xFF3E6AE1.toInt(); c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 5.5f * d, dot)
-        }
-    }
-
-    private fun end(c: Canvas, proj: Projection, g: GeoPoint, col: Int, d: Float) {
-        proj.toPixels(g, pt)
-        dot.color = Color.BLACK; c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 10 * d, dot)
-        dot.color = col; c.drawCircle(pt.x.toFloat(), pt.y.toFloat(), 7 * d, dot)
-    }
-
-    override fun onSingleTapConfirmed(e: MotionEvent, mapView: MapView): Boolean {
-        for ((r, s) in placed) if (r.contains(e.x, e.y)) { onTap(s); return true }
-        return false
-    }
-}
-
-/** Owns the osmdroid MapView, the route line and the charger overlay. */
-internal class MapHolder(ctx: Context, onTap: (Site) -> Unit) {
+/**
+ * Owns the MapLibre map: price pills (symbol layer with collision handling),
+ * small dots for everything else, the route line and start/destination/me markers.
+ */
+internal class MapHolder(private val ctx: Context, private val onTap: (Site) -> Unit) {
     val view: MapView
-    val pins = ChargerOverlay(onTap)
-    private val routeLine = Polyline()
-    private val esriBase = EsriSource("EsriDarkBase", "World_Dark_Gray_Base")
-    private lateinit var labels: TilesOverlay
-    private var style: String? = null
+    private var map: MapLibreMap? = null
+    private var style: Style? = null
+    private var styleName: String? = null
+    private var wantedStyle: String = "dark"
+    private val images = HashSet<String>()
+    private val worker = Executors.newSingleThreadExecutor()
+    @Volatile private var generation = 0
+    private val density = ctx.resources.displayMetrics.density
 
-    /** OpenStreetMap turned dark: invert + rotate hues back, so water stays blue and roads stay bright. */
-    private val darkFilter = ColorMatrixColorFilter(ColorMatrix(floatArrayOf(
-        -1f, 0f, 0f, 0f, 255f,
-        0f, -1f, 0f, 0f, 255f,
-        0f, 0f, -1f, 0f, 255f,
-        0f, 0f, 0f, 1f, 0f,
-    )).apply {
-        postConcat(ColorMatrix(floatArrayOf(
-            -0.574f, 1.430f, 0.144f, 0f, 0f,
-            0.426f, 0.430f, 0.144f, 0f, 0f,
-            0.426f, 1.430f, -0.856f, 0f, 0f,
-            0f, 0f, 0f, 1f, 0f,
-        )))
-        postConcat(ColorMatrix().apply { setScale(0.82f, 0.86f, 0.95f, 1f) })
-    })
-
-    fun applyStyle(s: String) {
-        if (s == style) return
-        style = s
-        when (s) {
-            "esri" -> {
-                view.setTileSource(esriBase)
-                view.overlayManager.tilesOverlay.setColorFilter(null)
-                labels.isEnabled = true
-            }
-            "light" -> {
-                view.setTileSource(TileSourceFactory.MAPNIK)
-                view.overlayManager.tilesOverlay.setColorFilter(null)
-                labels.isEnabled = false
-            }
-            else -> {
-                view.setTileSource(TileSourceFactory.MAPNIK)
-                view.overlayManager.tilesOverlay.setColorFilter(darkFilter)
-                labels.isEnabled = false
-            }
-        }
-        view.invalidate()
-    }
     var profile: Profile? = null
+    var minKw = 50
     var plan: Plan? = null
         private set
-    var minKw = 50
+    var me: LatLng? = null
+        set(v) { field = v; updateEnds() }
+
+    /** cheapest chargers currently in view (for the bottom sheet when no route is planned) */
+    val visible = MutableStateFlow<List<NearItem>>(emptyList())
 
     init {
-        Configuration.getInstance().apply {
-            userAgentValue = "Ladepilot/1.0 (Android)"
-            osmdroidBasePath = File(ctx.cacheDir, "osmdroid")
-            osmdroidTileCache = File(ctx.cacheDir, "osmdroid/tiles")
-        }
+        MapLibre.getInstance(ctx)
         view = MapView(ctx)
-        view.setTileSource(TileSourceFactory.MAPNIK)
-        view.setMultiTouchControls(true)
-        view.zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
-        view.setMinZoomLevel(5.0)
-        view.setMaxZoomLevel(18.0)
-        view.setTilesScaledToDpi(true)
-        view.overlayManager.tilesOverlay.setLoadingBackgroundColor(0xFF0E0E10.toInt())
-        view.overlayManager.tilesOverlay.setLoadingLineColor(0xFF0E0E10.toInt())
-        labels = TilesOverlay(MapTileProviderBasic(ctx, EsriSource("EsriDarkRef", "World_Dark_Gray_Reference")), ctx)
-        labels.setLoadingBackgroundColor(Color.TRANSPARENT)
-        labels.setLoadingLineColor(Color.TRANSPARENT)
-        view.overlays.add(labels)
-        routeLine.outlinePaint.color = 0xFF3E6AE1.toInt()
-        routeLine.outlinePaint.strokeWidth = 6 * ctx.resources.displayMetrics.density
-        routeLine.outlinePaint.strokeCap = Paint.Cap.ROUND
-        routeLine.outlinePaint.isAntiAlias = true
-        routeLine.infoWindow = null
-        view.overlays.add(routeLine)
-        view.overlays.add(pins)
-        val here = app.ladepilot.data.LocationHelper.last(ctx)
-        if (here != null) {
-            view.controller.setZoom(12.0)
-            view.controller.setCenter(GeoPoint(here.latitude, here.longitude))
-            pins.me = GeoPoint(here.latitude, here.longitude)
-        } else {
-            view.controller.setZoom(9.0)
-            view.controller.setCenter(GeoPoint(48.2, 16.37))
+        view.onCreate(null)
+        view.addOnDidFailLoadingMapListener {
+            // fall back to the colourful style if a style URL is not available
+            if (styleName != "liberty") { styleName = null; loadStyle("liberty") }
         }
-        view.addMapListener(DelayedMapListener(object : MapListener {
-            override fun onScroll(event: ScrollEvent?): Boolean { refresh(); return true }
-            override fun onZoom(event: ZoomEvent?): Boolean { refresh(); return true }
-        }, 120))
+        view.getMapAsync { m ->
+            map = m
+            m.uiSettings.isCompassEnabled = false
+            m.uiSettings.isRotateGesturesEnabled = false
+            m.uiSettings.isTiltGesturesEnabled = false
+            m.uiSettings.isLogoEnabled = false
+            val here = LocationHelper.last(ctx)
+            me = here?.let { LatLng(it.latitude, it.longitude) }
+            m.cameraPosition = CameraPosition.Builder()
+                .target(me ?: LatLng(48.2, 16.37))
+                .zoom(if (me != null) 12.0 else 8.0)
+                .build()
+            m.addOnCameraIdleListener { refresh() }
+            m.addOnMapClickListener { ll -> handleClick(ll) }
+            loadStyle(wantedStyle)
+        }
     }
 
-    fun setPlan(p: Plan?) {
-        val changedRoute = p?.route !== plan?.route
-        plan = p
-        routeLine.setPoints(p?.route?.map { GeoPoint(it[0], it[1]) } ?: emptyList())
-        pins.origin = p?.origin?.let { GeoPoint(it.lat, it.lon) }
-        pins.dest = p?.dest?.let { GeoPoint(it.lat, it.lon) }
-        refresh()
-        if (p != null && changedRoute) fitRoute()
+    // ------------------------------------------------------------ lifecycle
+    fun onStart() = view.onStart()
+    fun onResume() = view.onResume()
+    fun onPause() = view.onPause()
+    fun onStop() = view.onStop()
+    fun onDestroy() { view.onDestroy(); worker.shutdown() }
+
+    // ------------------------------------------------------------ style
+    fun applyStyle(name: String) {
+        wantedStyle = when (name) { "light", "liberty" -> name; else -> "dark" }
+        if (map != null) loadStyle(wantedStyle)
+    }
+
+    private fun loadStyle(name: String) {
+        val m = map ?: return
+        if (name == styleName) return
+        styleName = name
+        val url = when (name) { "light" -> OFM + "positron"; "liberty" -> OFM + "liberty"; else -> OFM + "dark" }
+        m.setStyle(Style.Builder().fromUri(url)) { st ->
+            style = st
+            images.clear()
+            setupLayers(st)
+            updateRoute()
+            updateEnds()
+            refresh()
+        }
+    }
+
+    private fun setupLayers(st: Style) {
+        for (id in listOf("route", "dots", "pins", "stops", "ends")) st.addSource(GeoJsonSource(id))
+        st.addLayer(LineLayer("route-casing", "route").withProperties(
+            PropertyFactory.lineColor("#0A1A44"), PropertyFactory.lineWidth(9f),
+            PropertyFactory.lineCap(Property.LINE_CAP_ROUND), PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)))
+        st.addLayer(LineLayer("route-line", "route").withProperties(
+            PropertyFactory.lineColor("#4C7BFF"), PropertyFactory.lineWidth(5.5f),
+            PropertyFactory.lineCap(Property.LINE_CAP_ROUND), PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)))
+        st.addLayer(CircleLayer("dots", "dots").withProperties(
+            PropertyFactory.circleColor(Expression.get("c")), PropertyFactory.circleRadius(Expression.get("r")),
+            PropertyFactory.circleOpacity(Expression.get("o")),
+            PropertyFactory.circleStrokeColor("#000000"), PropertyFactory.circleStrokeWidth(0.8f)))
+        st.addLayer(SymbolLayer("pins", "pins").withProperties(
+            PropertyFactory.iconImage(Expression.get("img")),
+            PropertyFactory.iconAllowOverlap(false),
+            PropertyFactory.iconIgnorePlacement(false),
+            PropertyFactory.symbolSortKey(Expression.get("prio")),
+            PropertyFactory.iconAnchor(Property.ICON_ANCHOR_CENTER)))
+        st.addLayer(SymbolLayer("stops", "stops").withProperties(
+            PropertyFactory.iconImage(Expression.get("img")),
+            PropertyFactory.iconAllowOverlap(true),
+            PropertyFactory.iconIgnorePlacement(true),
+            PropertyFactory.iconAnchor(Property.ICON_ANCHOR_CENTER)))
+        st.addLayer(CircleLayer("ends", "ends").withProperties(
+            PropertyFactory.circleColor(Expression.get("c")), PropertyFactory.circleRadius(Expression.get("r")),
+            PropertyFactory.circleStrokeColor(Expression.get("s")), PropertyFactory.circleStrokeWidth(3f)))
+    }
+
+    // ------------------------------------------------------------ camera
+    fun flyTo(lat: Double, lon: Double, zoom: Double = 13.0) {
+        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lon), zoom), 600)
     }
 
     fun fitRoute() {
-        val pts = plan?.route?.map { GeoPoint(it[0], it[1]) } ?: return
-        if (pts.size < 2) return
-        view.post {
-            try {
-                val bb = BoundingBox.fromGeoPoints(pts)
-                // leave room for the search card on top and the sheet at the bottom
-                val south = bb.latSouth - (bb.latNorth - bb.latSouth) * 0.9
-                val north = bb.latNorth + (bb.latNorth - bb.latSouth) * 0.25
-                view.zoomToBoundingBox(BoundingBox(north, bb.lonEast, south, bb.lonWest), true, 60)
-            } catch (e: Exception) { }
-        }
+        val m = map ?: return
+        val r = plan?.route ?: return
+        if (r.size < 2) return
+        val b = LatLngBounds.Builder().includes(r.map { LatLng(it[0], it[1]) }).build()
+        val pad = (40 * density).toInt()
+        m.animateCamera(CameraUpdateFactory.newLatLngBounds(b, pad, (150 * density).toInt(), pad, (110 * density).toInt()), 800)
     }
 
-    private val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
-    @Volatile private var generation = 0
+    // ------------------------------------------------------------ plan
+    fun setPlan(p: Plan?) {
+        val changed = p?.route !== plan?.route
+        plan = p
+        updateRoute()
+        updateEnds()
+        refresh()
+        if (p != null && changed) fitRoute()
+    }
 
-    /** Recomputes the visible price pins off the main thread. */
+    private fun updateRoute() {
+        val src = style?.getSourceAs<GeoJsonSource>("route") ?: return
+        val r = plan?.route
+        if (r != null && r.size > 1) src.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(r.map { Point.fromLngLat(it[1], it[0]) })))
+        else src.setGeoJson(FeatureCollection.fromFeatures(emptyList()))
+    }
+
+    private fun updateEnds() {
+        val src = style?.getSourceAs<GeoJsonSource>("ends") ?: return
+        val f = ArrayList<Feature>()
+        fun add(lat: Double, lon: Double, c: String, s: String, r: Float) {
+            f += Feature.fromGeometry(Point.fromLngLat(lon, lat)).apply {
+                addStringProperty("c", c); addStringProperty("s", s); addNumberProperty("r", r)
+            }
+        }
+        me?.let { add(it.latitude, it.longitude, "#3E6AE1", "#FFFFFF", 7f) }
+        plan?.let { p ->
+            add(p.origin.lat, p.origin.lon, "#FFFFFF", "#000000", 6.5f)
+            add(p.dest.lat, p.dest.lon, "#FF453A", "#000000", 7.5f)
+        }
+        src.setGeoJson(FeatureCollection.fromFeatures(f))
+    }
+
+    // ------------------------------------------------------------ taps
+    private fun handleClick(ll: LatLng): Boolean {
+        val m = map ?: return false
+        val p = m.projection.toScreenLocation(ll)
+        val t = 14 * density
+        val hits = m.queryRenderedFeatures(RectF(p.x - t, p.y - t, p.x + t, p.y + t), "stops", "pins", "dots")
+        val id = hits.firstOrNull()?.getStringProperty("id") ?: return false
+        DataRepo.site(id)?.let(onTap)
+        return true
+    }
+
+    // ------------------------------------------------------------ price pills
+    private fun pinBitmap(text: String, color: Int, kind: Int, dim: Boolean): Bitmap {
+        val d = density
+        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD; textSize = 13.5f * d }
+        val w = tp.measureText(text) + 28 * d
+        val h = 26 * d
+        val bmp = Bitmap.createBitmap((w + 2 * d).toInt(), (h + 2 * d).toInt(), Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val r = RectF(d, d, d + w, d + h)
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = when (kind) { 2 -> 0xFF3E6AE1.toInt(); 1 -> 0xFF30D158.toInt(); else -> 0xF21B1C20.toInt() }
+            if (dim && kind == 0) alpha = 175
+        }
+        c.drawRoundRect(r, h / 2, h / 2, bg)
+        c.drawRoundRect(r, h / 2, h / 2, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeWidth = 1.2f * d; this.color = 0x55FFFFFF
+        })
+        c.drawCircle(r.left + 12 * d, r.centerY(), 4.5f * d, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = if (kind == 0) color else Color.WHITE
+        })
+        tp.color = if (kind == 1) 0xFF05250F.toInt() else Color.WHITE
+        c.drawText(text, r.left + 21 * d, r.centerY() + tp.textSize * 0.36f, tp)
+        return bmp
+    }
+
+    /** Recomputes pins/dots for the visible area off the main thread. */
     fun refresh() {
+        val m = map ?: return
+        if (style == null) return
         val prof = profile ?: return
-        if (view.width == 0) { view.post { refresh() }; return }
-        val bb = view.boundingBox
-        val stops = plan?.stops?.map { it.cand.site.id }?.toSet() ?: emptySet()
+        val bb = m.projection.visibleRegion.latLngBounds
+        val north = bb.latNorth; val south = bb.latSouth; val east = bb.lonEast; val west = bb.lonWest
+        val stopIds = plan?.stops?.map { it.cand.site.id }?.toSet() ?: emptySet()
         val kw = minKw
+        val ref = me ?: m.cameraPosition.target ?: LatLng(48.2, 16.37)
+        val known = HashSet(images)
         val gen = ++generation
         worker.execute {
             val now = System.currentTimeMillis()
-            val vis = ArrayList<Pair<Site, app.ladepilot.data.Quote?>>()
+            val vis = ArrayList<Pair<Site, Quote?>>()
             for (s in DataRepo.sites) {
-                if (s.lat < bb.latSouth || s.lat > bb.latNorth || s.lon < bb.lonWest || s.lon > bb.lonEast) continue
-                if (s.maxKw < kw && s.id !in stops) continue
+                if (s.lat < south || s.lat > north || s.lon < west || s.lon > east) continue
+                if (s.maxKw < kw && s.id !in stopIds) continue
                 vis += s to Pricing.quote(s, kw, prof, now)
             }
-            val priced = vis.filter { it.second != null && it.first.id !in stops }.sortedBy { it.second!!.eur }
+            val priced = vis.filter { it.second != null && it.first.id !in stopIds }.sortedBy { it.second!!.eur }
             val bestEur = priced.firstOrNull { !it.second!!.free }?.second?.eur
             val best = priced.filter { !it.second!!.free }.take(5)
                 .filter { bestEur != null && it.second!!.eur <= bestEur + 0.03 }.map { it.first.id }.toSet()
-            val ordered = vis.filter { it.first.id in stops } + priced.take(350) +
-                vis.filter { it.second == null && it.first.id !in stops }.take(50)
-            val list = ordered.map { (s, q) ->
+
+            val newImages = HashMap<String, Bitmap>()
+            fun img(s: Site, q: Quote?, kind: Int): String {
+                val text = q?.let { Pricing.labelQ(s, it) + if (s.cur == "HUF") " Ft" else "" } ?: "–"
                 val av = Pricing.availability(s, kw)
-                Pin(
-                    s,
-                    q?.let { Pricing.labelQ(s, it) + if (s.cur == "HUF") " Ft" else "" } ?: "–",
-                    powerArgb(s.maxKw),
-                    if (s.id in stops) 2 else if (s.id in best) 1 else 0,
-                    dim = av != null && av.free == 0,
-                )
+                val dim = av != null && av.free == 0
+                val key = "p|$text|${powerArgb(s.maxKw)}|$kind|$dim"
+                if (key !in known && key !in newImages) newImages[key] = pinBitmap(text, powerArgb(s.maxKw), kind, dim)
+                return key
+            }
+            fun pt(s: Site) = Feature.fromGeometry(Point.fromLngLat(s.lon, s.lat)).apply { addStringProperty("id", s.id) }
+
+            val pinFeatures = ArrayList<Feature>()
+            (priced.take(400) + vis.filter { it.second == null && it.first.id !in stopIds }.take(60))
+                .forEachIndexed { i, (s, q) ->
+                    pinFeatures += pt(s).apply {
+                        addStringProperty("img", img(s, q, if (s.id in best) 1 else 0))
+                        addNumberProperty("prio", if (s.id in best) i - 1000 else i)
+                    }
+                }
+            val stopFeatures = vis.filter { it.first.id in stopIds }.map { (s, q) ->
+                pt(s).apply { addStringProperty("img", img(s, q, 2)) }
+            }
+            val dotFeatures = vis.take(6000).map { (s, _) ->
+                val av = Pricing.availability(s, kw)
+                pt(s).apply {
+                    addStringProperty("c", hex(powerArgb(s.maxKw)))
+                    addNumberProperty("r", if (s.maxKw >= 150) 4.5f else 3.5f)
+                    addNumberProperty("o", if (av != null && av.free == 0) 0.55f else 1f)
+                }
+            }
+            val near = priced.filter { !it.second!!.free || true }.take(80).map { (s, q) ->
+                NearItem(s, q!!, Geo.fastKm(ref.latitude, ref.longitude, s.lat, s.lon))
             }
             view.post {
-                if (gen == generation) { pins.pins = list; view.invalidate() }
+                if (gen != generation) return@post
+                val st = style ?: return@post
+                for ((k, b) in newImages) { st.addImage(k, b); images += k }
+                st.getSourceAs<GeoJsonSource>("dots")?.setGeoJson(FeatureCollection.fromFeatures(dotFeatures))
+                st.getSourceAs<GeoJsonSource>("pins")?.setGeoJson(FeatureCollection.fromFeatures(pinFeatures))
+                st.getSourceAs<GeoJsonSource>("stops")?.setGeoJson(FeatureCollection.fromFeatures(stopFeatures))
+                visible.value = near
             }
         }
     }

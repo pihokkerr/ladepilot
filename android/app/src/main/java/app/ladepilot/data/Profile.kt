@@ -44,8 +44,8 @@ data class Profile(
     val routeMinKw: Int = 100,
     /** route stop choice: "price" (cheapest) or "time" (fastest) */
     val optimize: String = "price",
-    /** "dark_osm" (detailed dark), "esri" (clean dark), "light" (OpenStreetMap) */
-    val mapStyle: String = "dark_osm",
+    /** "dark", "liberty" (colourful), "light" */
+    val mapStyle: String = "dark",
     val baseUrl: String = "https://ladepilot.pages.dev",
     val tariffs: List<Tariff> = Tariffs.presets,
 ) {

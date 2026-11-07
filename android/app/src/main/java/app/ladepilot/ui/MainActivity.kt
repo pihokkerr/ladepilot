@@ -167,8 +167,6 @@ private fun App() {
             NavigationBar(containerColor = Card1) {
                 NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
                     icon = { Icon(Icons.Filled.Place, null) }, label = { Text("Térkép") })
-                NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
-                    icon = { Icon(Icons.Filled.LocationOn, null) }, label = { Text("Közeli") })
                 NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                     icon = { Icon(Icons.Filled.Person, null) }, label = { Text("Profil") })
             }
@@ -177,7 +175,6 @@ private fun App() {
         Box(Modifier.padding(pad).fillMaxSize().background(Bg)) {
             when (tab) {
                 3 -> MapRouteTab(profile, onProfile)
-                0 -> NearbyTab(profile)
                 else -> ProfileTab(profile, onProfile)
             }
         }
@@ -396,15 +393,16 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
     var detail by remember { mutableStateOf<Site?>(null) }
     var editing by remember { mutableStateOf<Int?>(null) }   // 0 = origin, 1 = destination
     val holder = remember { MapHolder(ctx) { s -> detail = s } }
+    val near by holder.visible.collectAsState()
 
     DisposableEffect(Unit) {
-        holder.view.onResume()
-        onDispose { holder.view.onPause() }
+        holder.onStart(); holder.onResume()
+        onDispose { holder.onPause(); holder.onStop(); holder.onDestroy() }
     }
     SideEffect { holder.profile = profile; holder.minKw = profile.minKw; holder.applyStyle(profile.mapStyle) }
     LaunchedEffect(ver, tick, profile) {
         val l = LocationHelper.last(ctx)
-        holder.pins.me = l?.let { org.osmdroid.util.GeoPoint(it.latitude, it.longitude) }
+        if (l != null) holder.me = org.maplibre.android.geometry.LatLng(l.latitude, l.longitude)
         holder.refresh()
     }
     LaunchedEffect(plan) { holder.setPlan(plan) }
@@ -432,7 +430,7 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
     )
     BottomSheetScaffold(
         scaffoldState = sheet,
-        sheetPeekHeight = if (plan != null) 64.dp else 40.dp,
+        sheetPeekHeight = if (plan != null) 64.dp else 76.dp,
         sheetContainerColor = Card1,
         containerColor = Bg,
         sheetContent = {
@@ -454,8 +452,29 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                 }
                 if (p == null) {
                     item {
-                        Text(if (dest == null) "Hová mész? Add meg fent az úti célt." else "Tervezés…", fontWeight = FontWeight.SemiBold)
-                        Text(dataSummary() + " helyszín", color = Muted, fontSize = 12.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("LEGOLCSÓBB A TÉRKÉPEN", color = Muted, fontSize = 12.sp, letterSpacing = 1.sp, modifier = Modifier.weight(1f))
+                            Text(dataSummary(), color = Color(0xFF5C5C62), fontSize = 11.sp)
+                        }
+                    }
+                    if (near.isEmpty()) item { Text(if (DataRepo.sites.isEmpty()) "Adatok betöltése…" else "Ezen a területen nincs töltő árral – húzd odébb a térképet.", color = Muted) }
+                    val bestEur = near.firstOrNull { !it.quote.free }?.quote?.eur ?: 0.0
+                    items(near, key = { "n" + it.site.id }) { r ->
+                        Card(colors = CardDefaults.cardColors(containerColor = Bg), shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().clickable { holder.flyTo(r.site.lat, r.site.lon, 14.0); detail = r.site }) {
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.width(80.dp)) { PriceQ(r.site, r.quote, best = !r.quote.free && r.quote.eur <= bestEur + 0.02) }
+                                Column(Modifier.weight(1f)) {
+                                    Text(r.site.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("${r.site.op} · ${Geo.fmtKm(r.distKm)}" + (r.quote.tariff?.let { " · ${it.name}" } ?: ""),
+                                        color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    KwBadge(r.quote.kw)
+                                    AvailText(Pricing.availability(r.site, profile.minKw))
+                                }
+                            }
+                        }
                     }
                 } else {
                     item { PlanSummary(p) }
@@ -473,7 +492,7 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                     }
                 }
                 // battery + ranking
-                item {
+                if (dest != null) item {
                     Column {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Akku indulásnál", modifier = Modifier.weight(1f), color = Muted)
@@ -501,7 +520,7 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                     }
                     items(p.stops, key = { "s" + it.cand.site.id }) { st ->
                         StopCard(st,
-                            onClick = { holder.view.controller.animateTo(org.osmdroid.util.GeoPoint(st.cand.site.lat, st.cand.site.lon), 13.0, 600L) },
+                            onClick = { holder.flyTo(st.cand.site.lat, st.cand.site.lon) },
                             onRemove = {
                                 val id = st.cand.site.id
                                 RouteUi.fixed.value = RouteUi.fixed.value - id
@@ -559,15 +578,26 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
             Card(colors = CardDefaults.cardColors(containerColor = Card1.copy(alpha = 0.96f)), shape = RoundedCornerShape(18.dp),
                 modifier = Modifier.padding(12.dp).fillMaxWidth()) {
                 Column(Modifier.padding(vertical = 4.dp)) {
-                    EndpointRow(Color.White, origin?.name ?: "Saját hely", false) { editing = 0 }
+                    EndpointRow(Color.White, origin?.name ?: "Saját hely", false,
+                        onClear = if (origin != null) ({ RouteUi.origin.value = null; RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet(); replan() }) else null,
+                    ) { editing = 0 }
                     HorizontalDivider(Modifier.padding(start = 44.dp), color = Color(0x22FFFFFF))
-                    EndpointRow(Bad, dest?.name ?: "Hová mész?", dest == null) { editing = 1 }
+                    EndpointRow(Bad, dest?.name ?: "Hová mész?", dest == null,
+                        onClear = if (dest != null) ({
+                            RouteUi.dest.value = null; RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet()
+                            PlanStore.plan.value = null
+                            LocationHelper.last(ctx)?.let { holder.flyTo(it.latitude, it.longitude, 12.0) }
+                        }) else null,
+                    ) { editing = 1 }
                 }
             }
             // ---- my location
             IconButton(
                 onClick = {
-                    LocationHelper.last(ctx)?.let { holder.view.controller.animateTo(org.osmdroid.util.GeoPoint(it.latitude, it.longitude), 13.0, 600L) }
+                    LocationHelper.last(ctx)?.let {
+                        holder.me = org.maplibre.android.geometry.LatLng(it.latitude, it.longitude)
+                        holder.flyTo(it.latitude, it.longitude, 13.0)
+                    }
                 },
                 modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp).size(52.dp)
                     .background(Card1, CircleShape),
@@ -595,13 +625,17 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
 }
 
 @Composable
-private fun EndpointRow(dot: Color, text: String, placeholder: Boolean, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 12.dp),
+private fun EndpointRow(dot: Color, text: String, placeholder: Boolean, onClear: (() -> Unit)? = null, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(start = 16.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(12.dp).background(dot, CircleShape))
         Spacer(Modifier.width(16.dp))
         Text(text, color = if (placeholder) Muted else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis,
-            fontWeight = if (placeholder) FontWeight.Normal else FontWeight.SemiBold)
+            fontWeight = if (placeholder) FontWeight.Normal else FontWeight.SemiBold,
+            modifier = Modifier.weight(1f).padding(vertical = 14.dp))
+        if (onClear != null) IconButton(onClick = onClear, modifier = Modifier.size(40.dp)) {
+            Icon(Icons.Filled.Close, "Törlés", tint = Muted)
+        } else Spacer(Modifier.size(40.dp))
     }
 }
 
@@ -780,7 +814,7 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                     }
                     Text("TÉRKÉP", color = Muted, fontSize = 12.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("dark_osm" to "Sötét részletes", "esri" to "Sötét letisztult", "light" to "Világos").forEach { (k, l) ->
+                        listOf("dark" to "Sötét", "liberty" to "Színes", "light" to "Világos").forEach { (k, l) ->
                             FilterChip(selected = profile.mapStyle == k, onClick = { onProfile(profile.copy(mapStyle = k)) }, label = { Text(l) })
                         }
                     }

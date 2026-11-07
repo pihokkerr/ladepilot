@@ -56,8 +56,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("androidx.core:core-ktx:1.15.0")
 
-    // Map on the phone (OpenStreetMap engine, Esri dark tiles – no API key)
-    implementation("org.osmdroid:osmdroid-android:6.1.18")
+    // Vector map on the phone (MapLibre + OpenFreeMap styles – no API key)
+    implementation("org.maplibre.gl:android-sdk:11.5.2")
 
     // Android Auto (Car App Library)
     implementation("androidx.car.app:app:1.4.0")
