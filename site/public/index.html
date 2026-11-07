@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0c">
+<title>Ladepilot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<style>
+:root{
+  --bg:#0b0b0c; --panel:rgba(18,18,20,.86); --panel-solid:#141416; --raise:rgba(255,255,255,.06);
+  --line:rgba(255,255,255,.08); --text:#f4f4f5; --muted:#8e8e93; --dim:#5c5c62;
+  --accent:#3e6ae1; --good:#30d158; --warn:#ffb340; --bad:#ff453a;
+  --p-ac:#8a94a6; --p-fast:#30d158; --p-hpc:#ffb340; --p-ultra:#ff3b30;
+  --r:18px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font:15px/1.4 Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+#map{position:fixed;inset:0;background:#0e0e10}
+.leaflet-container{background:#0e0e10;font:inherit}
+.leaflet-control-attribution{background:rgba(0,0,0,.45)!important;color:#777!important;font-size:10px}
+.leaflet-control-attribution a{color:#999!important}
+
+/* ---------- panel ---------- */
+#panel{position:fixed;z-index:1000;top:16px;left:16px;bottom:16px;width:400px;display:flex;flex-direction:column;
+  background:var(--panel);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);
+  border:1px solid var(--line);border-radius:24px;box-shadow:0 20px 60px rgba(0,0,0,.55);overflow:hidden}
+.head{padding:20px 22px 12px;display:flex;align-items:center;justify-content:space-between}
+.brand{font-weight:700;letter-spacing:.32em;font-size:15px}
+.brand b{color:var(--accent);font-weight:700}
+.fresh{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:7px}
+.fresh i{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px rgba(48,209,88,.18)}
+.fresh.stale i{background:var(--warn);box-shadow:0 0 0 3px rgba(255,179,64,.18)}
+.filters{padding:4px 18px 14px;display:flex;flex-wrap:wrap;gap:8px;border-bottom:1px solid var(--line)}
+.chip{height:40px;padding:0 15px;border-radius:20px;background:var(--raise);color:#d6d6da;font-size:14px;font-weight:500;display:inline-flex;align-items:center;gap:8px;transition:background .15s,color .15s}
+.chip.on{background:var(--text);color:#0b0b0c}
+.chip .sw{width:9px;height:9px;border-radius:50%}
+.seg{display:inline-flex;background:var(--raise);border-radius:20px;padding:3px;height:40px}
+.seg button{padding:0 12px;border-radius:17px;font-size:13.5px;font-weight:500;color:#c9c9ce}
+.seg button.on{background:var(--text);color:#0b0b0c}
+.listhead{padding:14px 22px 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between}
+#list{flex:1;overflow-y:auto;padding:0 10px 12px;scrollbar-width:thin;scrollbar-color:#333 transparent}
+.row{display:grid;grid-template-columns:76px 1fr auto;gap:12px;align-items:center;padding:12px;border-radius:16px;width:100%;text-align:left}
+.row:hover,.row:focus-visible{background:var(--raise);outline:none}
+.price{font-variant-numeric:tabular-nums;font-weight:700;font-size:22px;letter-spacing:-.02em;line-height:1}
+.price small{font-size:12px;font-weight:500;color:var(--muted);letter-spacing:0;margin-left:2px}
+.price.best{color:var(--good)}
+.price.na{color:var(--dim);font-size:18px}
+.rname{font-weight:600;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rsub{color:var(--muted);font-size:12.5px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kw{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;color:#d0d0d4}
+.kw i{width:8px;height:8px;border-radius:50%}
+.avail{font-size:12px;margin-top:4px;text-align:right;font-variant-numeric:tabular-nums}
+.avail.ok{color:var(--good)} .avail.busy{color:var(--warn)} .avail.off{color:var(--bad)} .avail.unk{color:var(--dim)}
+.empty{color:var(--muted);padding:30px 16px;text-align:center;line-height:1.6}
+
+/* ---------- detail ---------- */
+#detail{display:none;flex:1;overflow-y:auto;padding:0 22px 22px}
+#panel.show-detail #detail{display:block}
+#panel.show-detail #listwrap{display:none}
+#listwrap{display:flex;flex-direction:column;flex:1;min-height:0}
+.back{height:40px;padding:0 14px 0 10px;border-radius:20px;background:var(--raise);display:inline-flex;align-items:center;gap:6px;font-weight:500;font-size:14px;margin:4px 0 16px}
+.dname{font-size:21px;font-weight:700;letter-spacing:-.01em;line-height:1.25}
+.dop{color:var(--muted);margin-top:4px;font-size:14px}
+.daddr{color:var(--dim);font-size:13px;margin-top:2px}
+.bigprice{display:flex;align-items:baseline;gap:10px;margin:20px 0 4px}
+.bigprice .v{font-size:44px;font-weight:700;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
+.bigprice .u{color:var(--muted);font-size:15px}
+.extra{color:var(--muted);font-size:13.5px}
+.note{font-size:12px;color:var(--dim);margin-top:6px;line-height:1.5}
+.sched{margin:18px 0 6px}
+.bar{position:relative;display:flex;height:34px;border-radius:10px;overflow:hidden;background:var(--raise)}
+.bar div{display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:600;color:#0b0b0c;border-right:1px solid rgba(0,0,0,.25)}
+.bar .now{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fff;box-shadow:0 0 0 2px rgba(0,0,0,.4)}
+.ticks{display:flex;justify-content:space-between;color:var(--dim);font-size:11px;margin-top:5px}
+.btns{display:flex;gap:10px;margin:20px 0}
+.btn{flex:1;height:52px;border-radius:14px;background:var(--raise);font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;color:var(--text)}
+.btn.primary{background:var(--accent)}
+.pts{margin-top:4px}
+.pt{display:grid;grid-template-columns:1.1fr 1fr 1.2fr;gap:10px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+.pt>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.pt-c{align-items:flex-end}
+.pt-plug{font-size:12px;color:var(--muted);white-space:nowrap}
+.pt-price{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+.dot{width:12px;height:12px;border-radius:4px;background:var(--dim)}
+.more{font-size:11px;color:var(--muted)}
+.dot.s1{background:var(--good)} .dot.s2{background:var(--warn)} .dot.s3{background:var(--bad)}
+h4{margin:22px 0 4px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+/* ---------- map markers ---------- */
+.pill{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px 0 8px;border-radius:15px;
+  background:rgba(22,22,24,.94);border:1px solid rgba(255,255,255,.14);color:#fff;font-weight:700;font-size:14px;
+  font-variant-numeric:tabular-nums;white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.5);transform:translate(-50%,-50%);
+  transition:transform .12s}
+.pill i{width:10px;height:10px;border-radius:50%;flex:none}
+.pill sub{font-size:10.5px;font-weight:600;color:var(--muted);vertical-align:baseline}
+.pill.best{background:var(--good);border-color:transparent;color:#05250f}
+.pill.best sub{color:rgba(5,37,15,.7)}
+.pill.na{color:var(--muted);font-weight:600}
+.pill.sel{background:#fff;color:#0b0b0c;border-color:#fff;transform:translate(-50%,-50%) scale(1.12)}
+.pill.sel sub{color:#555}
+.pill.full{opacity:.55}
+.leaflet-div-icon{background:none;border:0}
+
+/* ---------- floating controls ---------- */
+.fab{position:fixed;z-index:1000;right:16px;width:56px;height:56px;border-radius:18px;background:var(--panel);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;
+  box-shadow:0 10px 30px rgba(0,0,0,.45)}
+#locate{bottom:24px} #zin{bottom:152px} #zout{bottom:90px}
+.fab svg{width:24px;height:24px}
+#toast{position:fixed;z-index:1100;left:50%;top:20px;transform:translateX(-50%);background:var(--panel-solid);border:1px solid var(--line);
+  padding:12px 18px;border-radius:14px;font-size:14px;display:none;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.me{width:18px;height:18px;border-radius:50%;background:var(--accent);border:3px solid #fff;box-shadow:0 0 0 8px rgba(62,106,225,.25)}
+
+@media (max-width:900px){
+  #panel{top:auto;left:8px;right:8px;bottom:8px;width:auto;max-height:46vh;border-radius:22px}
+  .head{padding:14px 18px 8px}
+  #locate{bottom:calc(46vh + 20px)} #zin,#zout{display:none}
+}
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<aside id="panel">
+  <div class="head">
+    <div class="brand">LADE<b>PILOT</b></div>
+    <div class="fresh" id="fresh"><i></i><span>betöltés…</span></div>
+  </div>
+  <div class="filters">
+    <div class="seg" id="kwseg" role="group" aria-label="Minimális teljesítmény">
+      <button data-kw="0">Mind</button>
+      <button data-kw="50" class="on">50+</button>
+      <button data-kw="150">150+</button>
+      <button data-kw="250">250+</button>
+    </div>
+    <button class="chip" id="fFree">Csak szabad</button>
+    <button class="chip" id="fTesla"><span class="sw" style="background:var(--p-ultra)"></span>Supercharger</button>
+  </div>
+  <div id="listwrap">
+    <div class="listhead"><span>Legolcsóbb a térképen</span><span id="count"></span></div>
+    <div id="list"></div>
+  </div>
+  <div id="detail"></div>
+</aside>
+
+<button class="fab" id="zin" aria-label="Nagyítás"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+<button class="fab" id="zout" aria-label="Kicsinyítés"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+<button class="fab" id="locate" aria-label="Saját hely"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2" fill="currentColor"/></svg></button>
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+"use strict";
+/* ================= state ================= */
+const S = { sites: [], minKw: 50, onlyFree: false, onlyTesla: false, sel: null, me: null, generated: [] };
+const store = {
+  get(k, d){ try { const v = localStorage.getItem("lp_" + k); return v === null ? d : JSON.parse(v); } catch(e){ return d; } },
+  set(k, v){ try { localStorage.setItem("lp_" + k, JSON.stringify(v)); } catch(e){} }
+};
+S.minKw = store.get("minKw", 50); S.onlyFree = store.get("onlyFree", false); S.onlyTesla = store.get("onlyTesla", false);
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const powerColor = kw => kw >= 250 ? "var(--p-ultra)" : kw >= 150 ? "var(--p-hpc)" : kw > 22 ? "var(--p-fast)" : "var(--p-ac)";
+const powerHex = kw => kw >= 250 ? "#ff3b30" : kw >= 150 ? "#ffb340" : kw > 22 ? "#30d158" : "#8a94a6";
+const fmtEur = v => v.toFixed(2).replace(".", ",");
+const ct = v => Math.round(v * 100);
+/* price label in the site's local currency: AT/DE in ct, HU in Ft */
+const pnum = (s, eur) => s.cur === "HUF" ? Math.round(eur * s.fx) : ct(eur);
+const punit = s => s.cur === "HUF" ? "Ft" : "ct";
+const pbig = (s, eur) => s.cur === "HUF" ? `${Math.round(eur * s.fx)}` : fmtEur(eur);
+const pbigUnit = s => s.cur === "HUF" ? "Ft/kWh" : "€/kWh";
+
+/* ================= map ================= */
+const map = L.map("map", { zoomControl: false, preferCanvas: true, worldCopyJump: true, attributionControl: true })
+  .setView(store.get("view", [48.2, 16.37, 9]).slice(0, 2), store.get("view", [48.2, 16.37, 9])[2]);
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png",
+  { maxZoom: 19, subdomains: "abcd", attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/">CARTO</a> · Adatok: <a href="https://www.ladestellen.at">ladestellen.at</a> (E-Control), OTPR (ELMOB), Mobilithek' }).addTo(map);
+map.createPane("labels"); map.getPane("labels").style.zIndex = 450; map.getPane("labels").style.pointerEvents = "none";
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png", { maxZoom: 19, subdomains: "abcd", pane: "labels" }).addTo(map);
+const canvas = L.canvas({ padding: 0.3 });
+const layer = L.layerGroup().addTo(map);
+let meMarker = null;
+
+$("zin").onclick = () => map.zoomIn();
+$("zout").onclick = () => map.zoomOut();
+
+/* ================= data ================= */
+// Time-of-day prices are published as local wall-clock times (Central Europe)
+const tzFmt = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Vienna", hour: "2-digit", minute: "2-digit", hour12: false });
+function nowMinutes(){ const [h, m] = tzFmt.format(new Date()).split(":").map(Number); return (h % 24) * 60 + m; }
+
+function prepare(doc, src){
+  const out = [];
+  for (const r of doc.sites || []) {
+    const [id, name, opi, lat, lon, addr, country, points, schedule, extra] = r;
+    const op = (doc.ops || [])[opi] || "";
+    out.push({
+      id, name, op, lat, lon, addr, country, points, schedule: schedule || null, src,
+      cur: extra && extra.cur || "EUR", fx: extra && extra.fx || 1, abs: extra && extra.abs || null, fees: extra && extra.fees || null,
+      tesla: /tesla/i.test(op) || /supercharger/i.test(name),
+      maxKw: Math.max(0, ...points.map(p => p[0] || 0))
+    });
+  }
+  return out;
+}
+
+/** Price info for the points of a site that pass the power filter. */
+function siteInfo(s){
+  const pts = s.points.filter(p => (p[0] || 0) >= S.minKw);
+  if (!pts.length) return null;
+  let kwh = null, perMin = null, free = 0, known = 0, off = 0;
+  const sched = s.schedule ? schedPrice(s.schedule) : s.abs ? absPrice(s.abs) : null;
+  for (const p of pts) {
+    const price = sched ?? p[2];
+    if (price != null && (kwh == null || price < kwh)) { kwh = price; perMin = p[3]; }
+    if (p[4]) { known++; if (p[4] === 1) free++; if (p[4] === 3) off++; }
+  }
+  return { pts, kwh, perMin, free, known, off, total: pts.length, maxKw: Math.max(...pts.map(p => p[0] || 0)) };
+}
+function absPrice(abs, t){
+  const now = (t || Date.now()) / 1000; let v = null;
+  for (const [at, eur] of abs) if (at <= now) v = eur;
+  return v ?? abs[0][1];
+}
+function nextChange(s){
+  if (!s.abs) return null;
+  const now = Date.now() / 1000, cur = absPrice(s.abs);
+  const n = s.abs.find(([at, eur]) => at > now && eur !== cur);
+  return n ? { at: new Date(n[0] * 1000), eur: n[1] } : null;
+}
+function schedPrice(sched){
+  const m = nowMinutes();
+  for (const [a, b, v] of sched) if (m >= a && m < b) return v;
+  return null;
+}
+
+async function load(){
+  const results = await Promise.allSettled([
+    fetch("/api/at", { cache: "no-cache" }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch("/api/hu", { cache: "no-cache" }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
+    fetch("data/de_tesla.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : Promise.reject(r.status))
+  ]);
+  const all = [];
+  const labels = ["AT", "HU", "DE"];
+  results.forEach((res, i) => {
+    if (res.status === "fulfilled") { all.push(...prepare(res.value, labels[i])); S.generated.push(res.value.generated); }
+    else console.warn("Adatforrás nem elérhető:", labels[i], res.reason);
+  });
+  S.sites = all;
+  const atOk = results[0].status === "fulfilled";
+  const g = atOk ? new Date(results[0].value.generated) : null;
+  const age = g ? (Date.now() - g) / 60000 : Infinity;
+  $("fresh").className = "fresh" + (age > 45 ? " stale" : "");
+  $("fresh").querySelector("span").textContent = g ? "Frissítve " + g.toLocaleTimeString("hu-HU", { hour: "2-digit", minute: "2-digit" }) : "AT adatok hiányoznak";
+  if (!atOk) toast("Az osztrák adatok még nem érhetők el – csak a német Supercharger-ek látszanak.");
+  render();
+}
+
+/* ================= rendering ================= */
+let lastVisible = [];
+function passes(s, info){
+  if (!info) return false;
+  if (S.onlyTesla && !s.tesla) return false;
+  if (S.onlyFree && info.known && info.free === 0) return false;
+  return true;
+}
+function distKm(a, b, c, d){
+  const R = 6371, x = (c - a) * Math.PI / 180, y = (d - b) * Math.PI / 180;
+  const h = Math.sin(x / 2) ** 2 + Math.cos(a * Math.PI / 180) * Math.cos(c * Math.PI / 180) * Math.sin(y / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function render(){
+  layer.clearLayers();
+  const b = map.getBounds().pad(0.15), z = map.getZoom();
+  const ref = S.me || map.getCenter();
+  const vis = [];
+  for (const s of S.sites) {
+    if (!b.contains([s.lat, s.lon])) continue;
+    const info = siteInfo(s);
+    if (!passes(s, info)) continue;
+    vis.push({ s, info, d: distKm(ref.lat, ref.lng, s.lat, s.lon) });
+  }
+  const priced = vis.filter(v => v.info.kwh != null).sort((a, b) => a.info.kwh - b.info.kwh || a.d - b.d);
+  // "best" = the 5 cheapest in view, as long as they are within 3 ct of the minimum
+  const bestSet = new Set(priced.filter((v, i) => i < 5 && v.info.kwh <= priced[0].info.kwh + 0.03).map(v => v.s.id));
+  const best = priced.length ? priced[0].info.kwh : null;
+
+  // Labels: cheapest first, skip any label that would overlap one already placed
+  const pillSet = new Set();
+  if (z >= 9) {
+    const boxes = [], W = 78, H = 34;
+    const cand = [...priced, ...vis.filter(v => v.info.kwh == null)];
+    if (S.sel) { const i = cand.findIndex(v => v.s.id === S.sel); if (i > 0) cand.unshift(cand.splice(i, 1)[0]); }
+    for (const v of cand) {
+      if (pillSet.size >= 300) break;
+      const p = map.latLngToContainerPoint([v.s.lat, v.s.lon]);
+      if (boxes.some(b => Math.abs(b.x - p.x) < W && Math.abs(b.y - p.y) < H)) continue;
+      boxes.push(p); pillSet.add(v.s.id);
+    }
+  }
+
+  for (const v of vis) {
+    const { s, info } = v;
+    if (pillSet.has(s.id)) {
+      const isBest = bestSet.has(s.id);
+      const full = info.known && info.free === 0;
+      const cls = ["pill", isBest ? "best" : "", info.kwh == null ? "na" : "", S.sel === s.id ? "sel" : "", full ? "full" : ""].join(" ");
+      const avail = info.known ? `<sub>${info.free}/${info.known}</sub>` : "";
+      const html = `<div class="${cls}"><i style="background:${powerColor(info.maxKw)}"></i>${info.kwh != null ? pnum(s, info.kwh) : "–"}${avail}</div>`;
+      L.marker([s.lat, s.lon], { icon: L.divIcon({ html, className: "", iconSize: [0, 0] }), zIndexOffset: isBest ? 1000 : (S.sel === s.id ? 2000 : Math.round(-(info.kwh ?? 9) * 100)) })
+        .on("click", () => select(s.id)).addTo(layer);
+    } else {
+      L.circleMarker([s.lat, s.lon], { renderer: canvas, radius: info.maxKw >= 150 ? 5 : 3.5, stroke: false, fillColor: powerHex(info.maxKw), fillOpacity: 0.9 })
+        .on("click", () => { map.setView([s.lat, s.lon], Math.max(z + 2, 12)); select(s.id); }).addTo(layer);
+    }
+  }
+  lastVisible = priced;
+  renderList(priced, bestSet, vis.length);
+  if (S.sel) renderDetail();
+}
+
+function availText(info){
+  if (!info.known) return `<div class="avail unk">nincs élő adat</div>`;
+  if (info.free) return `<div class="avail ok">${info.free}/${info.known} szabad</div>`;
+  if (info.off === info.known) return `<div class="avail off">üzemen kívül</div>`;
+  return `<div class="avail busy">foglalt</div>`;
+}
+function renderList(priced, bestSet, total){
+  $("count").textContent = total ? `${total} helyszín` : "";
+  if (!S.sites.length) { $("list").innerHTML = `<div class="empty">Adatok betöltése…</div>`; return; }
+  if (!priced.length) { $("list").innerHTML = `<div class="empty">Ezen a területen nincs a szűrőnek megfelelő töltő árral.<br>Húzd odébb vagy kicsinyítsd a térképet.</div>`; return; }
+  $("list").innerHTML = priced.slice(0, 60).map(({ s, info, d }) => `
+    <button class="row" data-id="${esc(s.id)}">
+      <div class="price ${bestSet.has(s.id) ? "best" : ""}">${pnum(s, info.kwh)}<small>${punit(s)}</small></div>
+      <div style="min-width:0"><div class="rname">${esc(s.name)}</div>
+        <div class="rsub">${esc(s.op)} · ${d < 10 ? d.toFixed(1) : Math.round(d)} km${info.perMin ? ` · +${ct(info.perMin)} ct/perc` : ""}</div></div>
+      <div><div class="kw"><i style="background:${powerColor(info.maxKw)}"></i>${info.maxKw} kW</div>${availText(info)}</div>
+    </button>`).join("");
+}
+$("list").addEventListener("click", e => {
+  const row = e.target.closest(".row"); if (!row) return;
+  const s = S.sites.find(x => x.id === row.dataset.id); if (!s) return;
+  select(s.id); map.setView([s.lat, s.lon], Math.max(map.getZoom(), 13));
+});
+
+/* ================= detail ================= */
+function select(id){ S.sel = id; $("panel").classList.add("show-detail"); render(); }
+function closeDetail(){ S.sel = null; $("panel").classList.remove("show-detail"); render(); }
+
+function renderDetail(){
+  const s = S.sites.find(x => x.id === S.sel); if (!s) return closeDetail();
+  const info = siteInfo(s) || { pts: s.points, kwh: null };
+  // group points by kW + plug + price
+  const groups = new Map();
+  for (const p of s.points) {
+    const k = `${p[0]}|${p[1]}|${p[2]}|${p[3]}`;
+    if (!groups.has(k)) groups.set(k, { kw: p[0], plug: p[1], kwh: p[2], perMin: p[3], st: [] });
+    groups.get(k).st.push(p[4]);
+  }
+  const rows = [...groups.values()].sort((a, b) => b.kw - a.kw).map(g => {
+    const known = g.st.filter(x => x).length, free = g.st.filter(x => x === 1).length;
+    const dots = g.st.slice(0, 10).map(x => `<span class="dot s${x}"></span>`).join("") + (g.st.length > 10 ? `<span class="more">+${g.st.length - 10}</span>` : "");
+    const price = s.schedule ? `${fmtEur(schedPrice(s.schedule) ?? 0)} € most` : s.abs ? `${pbig(s, absPrice(s.abs))} ${pbigUnit(s)}` : g.kwh != null ? `${pbig(s, g.kwh)} ${s.cur === "HUF" ? "Ft" : "€"}` : "–";
+    return `<div class="pt">
+      <div class="pt-a"><span class="kw"><i style="background:${powerColor(g.kw)}"></i>${g.kw} kW</span><span class="pt-plug">${esc(g.plug)} · ${g.st.length} db</span></div>
+      <div class="pt-b"><span class="pt-price">${price}</span>${g.perMin ? `<span class="pt-plug">+${fmtEur(g.perMin)} €/perc</span>` : ""}</div>
+      <div class="pt-c"><span class="stat">${dots}</span><span class="pt-plug">${known ? `${free}/${known} szabad` : "nincs élő adat"}</span></div>
+    </div>`;
+  }).join("");
+  let sched = "";
+  if (s.schedule) {
+    const prices = s.schedule.map(x => x[2]); const lo = Math.min(...prices), hi = Math.max(...prices);
+    const col = v => hi === lo ? "#30d158" : `hsl(${130 - 110 * (v - lo) / (hi - lo)} 70% 55%)`;
+    sched = `<div class="sched"><div class="bar">${s.schedule.map(([a, b, v]) =>
+      `<div style="width:${(b - a) / 14.4}%;background:${col(v)}">${b - a >= 150 ? ct(v) : ""}</div>`).join("")}
+      <span class="now" style="left:${nowMinutes() / 14.4}%"></span></div>
+      <div class="ticks"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div></div>`;
+  }
+  const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}`;
+  const srcNote = s.src === "HU"
+    ? "Forrás: OTPR – Országos TöltőPont Regiszter (ELMOB). Ad-hoc ár, élő foglaltság nélkül."
+    : s.src === "DE"
+    ? "Forrás: Mobilithek (Tesla Germany, AFIR). Ad-hoc ár, élő foglaltság még nincs bekötve."
+    : "Forrás: E-Control ladestellen.at. Ad-hoc ár (kártya/app nélkül), élő állapot.";
+  $("detail").innerHTML = `
+    <button class="back" id="back"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>Lista</button>
+    <div class="dname">${esc(s.name)}</div>
+    <div class="dop">${esc(s.op)}</div>
+    <div class="daddr">${esc(s.addr)}</div>
+    <div class="bigprice"><span class="v">${info.kwh != null ? pbig(s, info.kwh) : "–"}</span><span class="u">${pbigUnit(s)}${s.schedule || s.abs ? " · most" : ""}${s.cur === "HUF" && info.kwh != null ? ` (${fmtEur(info.kwh)} €)` : ""}</span></div>
+    ${(() => { const n = nextChange(s); return n ? `<div class="extra">${n.at.toLocaleTimeString("hu-HU", { hour: "2-digit", minute: "2-digit" })}-tól ${pbig(s, n.eur)} ${pbigUnit(s)}</div>` : ""; })()}
+    ${s.fees ? `<div class="extra">${[s.fees.startFee ? `indítási díj ${s.fees.startFee} Ft` : "", s.fees.idle ? `blokkolási díj ${s.fees.idle} Ft/perc` : ""].filter(Boolean).join(" · ")}</div>` : ""}
+    ${info.perMin ? `<div class="extra">+ ${fmtEur(info.perMin)} € / perc</div>` : ""}
+    ${sched}
+    <div class="btns"><a class="btn primary" href="${navUrl}" target="_blank" rel="noopener">Navigáció</a></div>
+    <h4>Töltőpontok</h4>
+    <div class="pts">${rows}</div>
+    <div class="note">${srcNote}</div>`;
+  $("back").onclick = closeDetail;
+}
+
+/* ================= controls ================= */
+function syncFilters(){
+  document.querySelectorAll("#kwseg button").forEach(b => b.classList.toggle("on", +b.dataset.kw === S.minKw));
+  $("fFree").classList.toggle("on", S.onlyFree);
+  $("fTesla").classList.toggle("on", S.onlyTesla);
+  store.set("minKw", S.minKw); store.set("onlyFree", S.onlyFree); store.set("onlyTesla", S.onlyTesla);
+}
+$("kwseg").onclick = e => { const b = e.target.closest("button"); if (!b) return; S.minKw = +b.dataset.kw; syncFilters(); render(); };
+$("fFree").onclick = () => { S.onlyFree = !S.onlyFree; syncFilters(); render(); };
+$("fTesla").onclick = () => { S.onlyTesla = !S.onlyTesla; syncFilters(); render(); };
+syncFilters();
+
+let t;
+map.on("moveend", () => {
+  clearTimeout(t); t = setTimeout(render, 60);
+  const c = map.getCenter(); store.set("view", [c.lat, c.lng, map.getZoom()]);
+});
+
+function toast(msg){ const el = $("toast"); el.textContent = msg; el.style.display = "block"; clearTimeout(el._t); el._t = setTimeout(() => el.style.display = "none", 5000); }
+
+function locate(fly){
+  if (!navigator.geolocation) return toast("A helymeghatározás nem érhető el.");
+  navigator.geolocation.getCurrentPosition(p => {
+    S.me = L.latLng(p.coords.latitude, p.coords.longitude);
+    if (!meMarker) meMarker = L.marker(S.me, { icon: L.divIcon({ html: '<div class="me"></div>', className: "", iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 3000, interactive: false }).addTo(map);
+    else meMarker.setLatLng(S.me);
+    if (fly) map.setView(S.me, Math.max(map.getZoom(), 12)); else render();
+  }, err => { if (fly) toast("Nem sikerült a helymeghatározás: " + err.message); }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+}
+$("locate").onclick = () => locate(true);
+
+/* refresh: prices every 5 min (schedule changes), data every 10 min */
+setInterval(render, 5 * 60 * 1000);
+setInterval(load, 10 * 60 * 1000);
+
+load();
+locate(false);
+</script>
+</body>
+</html>

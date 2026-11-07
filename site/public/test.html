@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ladepilot – API-Test</title>
+<style>
+  :root { --bg:#0b0c0e; --card:#16181c; --line:#26292f; --text:#e8eaed; --muted:#8a9099; --accent:#3e6ae1; --ok:#2fbf71; --busy:#e5a72e; --bad:#e2483d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:20px 16px 60px; }
+  h1 { font-weight:500; letter-spacing:.02em; margin:0 0 4px; font-size:24px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-bottom:16px; }
+  label { display:block; color:var(--muted); font-size:13px; margin-bottom:6px; }
+  input, select { width:100%; background:#0f1114; color:var(--text); border:1px solid var(--line); border-radius:10px; padding:12px; font-size:15px; }
+  .row { display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; }
+  @media (max-width:700px){ .row{ grid-template-columns:1fr; } }
+  button { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:13px 22px; font-size:15px; font-weight:500; cursor:pointer; margin-top:14px; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--text); }
+  #status { margin-top:12px; color:var(--muted); white-space:pre-wrap; }
+  #status.err { color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; color:var(--muted); font-weight:500; padding:8px 6px; border-bottom:1px solid var(--line); }
+  td { padding:9px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  tr.tesla td { background:rgba(226,72,61,.08); }
+  .price { font-variant-numeric:tabular-nums; font-weight:600; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:99px; font-size:12px; margin:1px 2px 1px 0; }
+  .AVAILABLE { background:rgba(47,191,113,.18); color:var(--ok); }
+  .CHARGING,.RESERVED,.BLOCKED { background:rgba(229,167,46,.18); color:var(--busy); }
+  .OTHER { background:#2a2d33; color:var(--muted); }
+  .kw { color:var(--muted); }
+  textarea { width:100%; height:260px; background:#0f1114; color:#b9c0ca; border:1px solid var(--line); border-radius:10px; padding:10px; font:12px/1.4 ui-monospace,Consolas,monospace; }
+  h2 { font-size:17px; font-weight:500; margin:0 0 10px; }
+  .note { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ladepilot · API-Test</h1>
+  <p class="sub">E-Control Ladestellenverzeichnis – Preise &amp; Live-Status der nächsten ~100 Ladestellen</p>
+
+  <div class="panel">
+    <label for="key">API-Key (bleibt nur in diesem Browser gespeichert)</label>
+    <input id="key" type="password" autocomplete="off" placeholder="API-Key aus der E-Mail">
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label for="place">Ort</label>
+        <select id="place">
+          <option value="48.2082,16.3738">Wien</option>
+          <option value="48.0490,16.2850">A2/A21 Vösendorf</option>
+          <option value="47.0707,15.4395">Graz</option>
+          <option value="48.3069,14.2858">Linz</option>
+          <option value="47.8095,13.0550">Salzburg</option>
+          <option value="47.2692,11.4041">Innsbruck</option>
+          <option value="47.8460,16.5240">Neusiedl / Parndorf</option>
+          <option value="gps">Mein Standort (GPS)</option>
+        </select>
+      </div>
+      <div>
+        <label for="minkw">Mind. Leistung</label>
+        <select id="minkw">
+          <option value="0">alle</option>
+          <option value="50" selected>≥ 50 kW</option>
+          <option value="150">≥ 150 kW</option>
+        </select>
+      </div>
+      <div>
+        <label for="only">Anzeigen</label>
+        <select id="only">
+          <option value="all">alle Betreiber</option>
+          <option value="tesla">nur Tesla</option>
+        </select>
+      </div>
+    </div>
+    <button id="go">Abfragen</button>
+    <button class="ghost" id="datex">DATEX-II testen</button>
+    <button class="ghost" id="datexStatus">DATEX-Status testen</button>
+    <div id="status"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Ergebnis (nach Preis sortiert)</h2>
+    <div style="overflow-x:auto"><table id="tbl"><thead><tr>
+      <th>Preis</th><th>Betreiber</th><th>Standort</th><th>Leistung</th><th>Status der Ladepunkte</th><th>Entf.</th>
+    </tr></thead><tbody></tbody></table></div>
+    <p class="note">Tesla-Standorte sind rot hinterlegt.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Rohdaten (erster Tesla-Standort bzw. DATEX-Ausschnitt)</h2>
+    <p class="note">Diesen Text bitte komplett kopieren und an Claude schicken – daraus wird sichtbar, welche Preisfelder Tesla liefert.</p>
+    <textarea id="raw" readonly></textarea>
+    <button class="ghost" id="copy">Kopieren</button>
+  </div>
+</main>
+
+<script>
+const API = "https://api.e-control.at/charge/1.0";
+const $ = id => document.getElementById(id);
+const store = {
+  get(k){ try { return localStorage.getItem(k) || ""; } catch(e){ return ""; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){} }
+};
+$("key").value = store.get("ladepilot_key");
+
+function setStatus(msg, err){ $("status").textContent = msg; $("status").className = err ? "err" : ""; }
+const asList = x => Array.isArray(x) ? x : (x ? [x] : []);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function getPos(){
+  const v = $("place").value;
+  if (v !== "gps") { const [a,b] = v.split(",").map(Number); return Promise.resolve({lat:a, lon:b}); }
+  return new Promise((res, rej) => navigator.geolocation
+    ? navigator.geolocation.getCurrentPosition(p => res({lat:p.coords.latitude, lon:p.coords.longitude}), e => rej(new Error("GPS nicht verfügbar: " + e.message)), {timeout:10000})
+    : rej(new Error("GPS nicht verfügbar")));
+}
+
+function pointPrice(p){
+  const c = p.priceCentKwh ?? p.priceInCentPerKwh;
+  return typeof c === "number" ? c : null;
+}
+function pointKw(p){ return p.capacityKw ?? p.energyInKw ?? 0; }
+const isTesla = s => /tesla/i.test((s.operatorName || "") + " " + (s.operatorId || "") + " " + (s.label || ""));
+
+$("copy").onclick = () => { $("raw").select(); try { navigator.clipboard.writeText($("raw").value); } catch(e){ document.execCommand("copy"); } };
+
+async function testDatex(path){
+  const key = $("key").value.trim();
+  if (!key) { setStatus("Bitte API-Key eingeben.", true); return; }
+  store.set("ladepilot_key", key);
+  setStatus("Lade DATEX-Daten … (kann bei ganz Österreich 1–2 Minuten dauern)");
+  const t0 = Date.now();
+  for (const accept of ["application/json", "application/xml"]) {
+    let resp, text;
+    try {
+      resp = await fetch(API + path, { headers: { "apiKey": key, "Accept": accept } });
+      text = await resp.text();
+    } catch(e) { setStatus("Anfrage fehlgeschlagen (" + accept + "): " + e.message, true); continue; }
+    if (!resp.ok) { setStatus(`Server-Antwort ${resp.status} (${accept})\n${text.slice(0,400)}`, true); continue; }
+    const secs = ((Date.now() - t0) / 1000).toFixed(0);
+    const mb = (text.length / 1e6).toFixed(1);
+    if (accept !== "application/json") { $("raw").value = text.slice(0, 15000); setStatus(`OK (XML): ${mb} MB`); return; }
+    setStatus(`${mb} MB geladen, werte aus …`);
+    await new Promise(r => setTimeout(r, 50));
+    let d; try { d = JSON.parse(text); } catch(e) { setStatus("JSON-Fehler: " + e.message, true); return; }
+    text = null;
+    const txt = v => { try { return v.values.value[0].value; } catch(e) { return ""; } };
+    // Schlüsselnamen mit "price"/"rate"/"tariff" im ganzen Datensatz zählen
+    const keyCount = {};
+    const scanKeys = (o, depth) => {
+      if (depth > 40 || o === null || typeof o !== "object") return;
+      if (Array.isArray(o)) { for (const x of o) scanKeys(x, depth + 1); return; }
+      for (const k in o) { if (/price|rate|tariff|fee/i.test(k)) keyCount[k] = (keyCount[k] || 0) + 1; scanKeys(o[k], depth + 1); }
+    };
+    const tables = asList(d.energyInfrastructureTable);
+    const sites = tables.flatMap(t => asList(t.energyInfrastructureSite));
+    const ops = {}; const teslaSites = []; const statusSites = [];
+    for (const s of sites) {
+      const op = txt(s.operator && s.operator.name) || (s.operator && s.operator.id) || "?";
+      ops[op] = (ops[op] || 0) + 1;
+      if (/tesla/i.test(op) || /tesla/i.test(txt(s.owner && s.owner.name))) teslaSites.push(s);
+    }
+    // Status-Publikation hat eine andere Struktur
+    // Status-Einträge irgendwo im Baum suchen
+    let statusList = [];
+    const findStatus = (o, depth) => {
+      if (statusList.length || depth > 8 || o === null || typeof o !== "object") return;
+      if (Array.isArray(o)) { for (const x of o.slice(0, 5)) findStatus(x, depth + 1); return; }
+      for (const k in o) { if (/SiteStatus$/i.test(k) && Array.isArray(o[k])) { statusList = o[k]; return; } findStatus(o[k], depth + 1); }
+    };
+    findStatus(d, 0);
+    // Bei Status: Tesla-Einträge über die ID erkennen (AT-TSL…)
+    const teslaStatus = statusList.filter(s => /TSL/i.test(JSON.stringify(s).slice(0, 400)));
+    scanKeys(teslaSites.length ? teslaSites.slice(0, 50) : (sites.length ? sites.slice(0, 2000) : (statusList.length ? statusList.slice(0, 3000) : d)), 0);
+    const topOps = Object.entries(ops).sort((a,b) => b[1]-a[1]).slice(0, 15).map(([k,v]) => `  ${v}× ${k}`).join("\n");
+    const sample = teslaSites.length ? teslaSites[0]
+      : teslaStatus.length ? teslaStatus.slice(0, 2)
+      : statusList.length ? statusList.slice(0, 2)
+      : sites.length ? sites[0] : d;
+    let sampleTxt = JSON.stringify(sample, (k, v) => (Array.isArray(v) && v.length === 0) ? undefined : v, 1) || String(sample);
+    if (statusList.length) sampleTxt = `Status-Einträge gesamt: ${statusList.length}, davon Tesla: ${teslaStatus.length}\n` + sampleTxt;
+    $("raw").value =
+      `Endpunkt: ${path}\n${mb} MB · ${secs} s · Standorte: ${sites.length} · Tesla-Standorte: ${teslaSites.length} · Status-Einträge: ${statusList.length}\n` +
+      `Preis-/Tarif-Felder: ${JSON.stringify(keyCount)}\n` +
+      (sites.length ? `Top-Betreiber:\n${topOps}\n` : "") +
+      (teslaSites.length ? `Tesla-Standorte: ${teslaSites.slice(0, 40).map(s => txt(s.name)).join(" | ")}\n` : "") +
+      `\nBeispiel:\n` + sampleTxt.slice(0, 20000);
+    setStatus(`OK: ${mb} MB in ${secs} s · ${sites.length || statusList.length} Einträge · ${teslaSites.length} Tesla-Standorte. Bitte Rohdaten kopieren.`);
+    return;
+  }
+}
+$("datex").onclick = () => testDatex("/datex2/v3.5/energy-infrastructure-table-publication");
+$("datexStatus").onclick = () => testDatex("/datex2/v3.5/energy-infrastructure-status-publication");
+
+$("go").onclick = async () => {
+  const key = $("key").value.trim();
+  if (!key) { setStatus("Bitte API-Key eingeben.", true); return; }
+  store.set("ladepilot_key", key);
+  setStatus("Lade …");
+  $("tbl").querySelector("tbody").innerHTML = "";
+  let pos;
+  try { pos = await getPos(); } catch(e){ setStatus(e.message, true); return; }
+
+  let resp, data;
+  try {
+    resp = await fetch(`${API}/search?latitude=${pos.lat}&longitude=${pos.lon}`, {
+      headers: { "apiKey": key },
+      referrerPolicy: "strict-origin-when-cross-origin"
+    });
+  } catch(e) {
+    setStatus("Anfrage blockiert (wahrscheinlich CORS – der Server erlaubt keine Browser-Anfragen).\n" +
+      "Seite läuft auf: " + location.origin + "\nFehler: " + e.message, true);
+    return;
+  }
+  if (!resp.ok) {
+    let body = ""; try { body = (await resp.text()).slice(0, 400); } catch(e){}
+    setStatus(`Server-Antwort ${resp.status} ${resp.statusText}\nSeite läuft auf: ${location.origin}\n${body}`, true);
+    return;
+  }
+  try { data = await resp.json(); } catch(e){ setStatus("Antwort ist kein JSON: " + e.message, true); return; }
+
+  const stations = asList(data.stations || data);
+  const minKw = Number($("minkw").value), onlyTesla = $("only").value === "tesla";
+  const rows = [];
+  let firstTesla = null;
+  for (const s of stations) {
+    const tesla = isTesla(s);
+    if (tesla && !firstTesla) firstTesla = s;
+    if (onlyTesla && !tesla) continue;
+    const pts = asList(s.points).filter(p => pointKw(p) >= minKw);
+    if (!pts.length) continue;
+    const prices = pts.map(pointPrice).filter(x => x !== null);
+    const minP = prices.length ? Math.min(...prices) : null;
+    const maxKw = Math.max(...pts.map(pointKw));
+    const counts = {};
+    pts.forEach(p => { const st = p.status || "?"; counts[st] = (counts[st] || 0) + 1; });
+    rows.push({ s, tesla, minP, maxP: prices.length ? Math.max(...prices) : null, maxKw, counts, n: pts.length });
+  }
+  rows.sort((a,b) => (a.minP ?? 1e9) - (b.minP ?? 1e9));
+
+  $("tbl").querySelector("tbody").innerHTML = rows.map(r => {
+    const price = r.minP === null ? "—" : (r.minP === r.maxP ? `${r.minP.toFixed(1)} ct` : `${r.minP.toFixed(1)}–${r.maxP.toFixed(1)} ct`);
+    const pills = Object.entries(r.counts).map(([k,v]) =>
+      `<span class="pill ${["AVAILABLE","CHARGING","RESERVED","BLOCKED"].includes(k) ? k : "OTHER"}">${v}× ${esc(k)}</span>`).join("");
+    const dist = typeof r.s.distance === "number" ? r.s.distance.toFixed(1) + " km" : "";
+    return `<tr class="${r.tesla ? "tesla" : ""}"><td class="price">${price}</td><td>${esc(r.s.operatorName || r.s.operatorId)}</td>
+      <td>${esc(r.s.label)}<br><span class="kw">${esc(r.s.street)} ${esc(r.s.postCode)} ${esc(r.s.city)}</span></td>
+      <td class="kw">${r.maxKw} kW · ${r.n} LP</td><td>${pills}</td><td class="kw">${dist}</td></tr>`;
+  }).join("");
+
+  $("raw").value = firstTesla ? JSON.stringify(firstTesla, null, 2) : "(kein Tesla-Standort unter den nächsten Ladestellen – anderen Ort wählen)";
+  setStatus(`${stations.length} Ladestellen geladen, ${rows.length} angezeigt.` + (firstTesla ? "" : " Kein Tesla in der Nähe – anderen Ort probieren."));
+};
+</script>
+</body>
+</html>

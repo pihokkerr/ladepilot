@@ -1,0 +1,46 @@
+name: Android app (APK)
+
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: APK fordítása
+        run: gradle -p android assembleRelease --stacktrace
+
+      - name: APK átnevezése
+        run: cp android/app/build/outputs/apk/release/app-release.apk ladepilot.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ladepilot-apk
+          path: ladepilot.apk
+
+      - name: Letölthető kiadás frissítése (latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Ladepilot – legfrissebb APK
+          body: "Automatikusan fordított APK (build ${{ github.run_number }}). Telefonon: töltsd le a ladepilot.apk-t és telepítsd."
+          files: ladepilot.apk
+          make_latest: true

@@ -1,0 +1,32 @@
+name: Magyar adatok frissítése
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"   # 30 percenként (az OTPR-t kíméletesen kérdezzük le)
+  workflow_dispatch:
+
+concurrency:
+  group: data-hu
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Magyarország – OTPR letöltése és sűrítése
+        run: python pipeline/build.py hu --out out/hu.json
+
+      - name: Feltöltés Cloudflare KV-ba
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >
+          npx --yes wrangler@3 kv key put hu.json --path out/hu.json
+          --namespace-id "${{ secrets.KV_NAMESPACE_ID }}" --remote
