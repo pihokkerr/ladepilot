@@ -5,6 +5,14 @@ Saját töltőár-térkép Teslához: minden szolgáltató töltője Ausztriába
 - **Weboldal:** https://ladepilot.pages.dev
 - **Adatforrások:** E-Control Ladestellenverzeichnis (ladestellen.at), Mobilithek (AFIR, CC0)
 
+## Android-app (Android Auto)
+
+- **Letöltés:** https://github.com/pihokkerr/ladepilot/releases/download/latest/ladepilot.apk
+  (minden `android/` módosítás után automatikusan újrafordul, ugyanerre a linkre).
+- Android Autóban: fejlesztői beállítások → *Unknown sources* bekapcsolva.
+- Telefonon: Közeli / Útvonal (töltéstervező akkuszázalékkal, Legolcsóbb/Leggyorsabb rangsor) / Profil (akku, fogyasztás, tarifák).
+- Útvonal: OSRM (router.project-osrm.org), címkeresés: Nominatim (OpenStreetMap).
+
 ## Felépítés
 
 ```
@@ -14,7 +22,10 @@ pipeline/build.py              letölti és kicsi JSON-ba sűríti az adatokat
 site/public/index.html         a térkép
 site/public/test.html          API-tesztoldal (hibakereséshez)
 site/public/data/de_tesla.json német Supercharger-ek napszakos árakkal (pillanatkép)
-site/functions/api/[name].js   /api/at → a KV-ban tárolt friss adat
+site/functions/api/[name].js   /api/at, /api/hu → a KV-ban tárolt friss adat
+.github/workflows/data-hu.yml  magyar adatok (OTPR, ELMOB engedélyével) 30 percenként
+.github/workflows/android.yml  APK fordítása és kiadása (latest)
+android/                       Android-app (telefon + Android Auto)
 ```
 
 ## Beállítás (egyszer kell)
