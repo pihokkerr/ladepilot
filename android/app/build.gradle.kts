@@ -16,6 +16,8 @@ android {
         targetSdk = 35
         versionCode = runNumber
         versionName = "1.0.$runNumber"
+        // Only 64-bit ARM (all current phones) – keeps the map engine's native code from bloating the APK
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     // One fixed key, so new APKs install over the old one without uninstalling.
