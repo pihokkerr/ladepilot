@@ -160,7 +160,7 @@ class NearbyScreen(ctx: CarContext) : Screen(ctx), DefaultLifecycleObserver {
         var near: List<Triple<Site, Double, app.ladepilot.data.Quote>> = emptyList()
         while (radius <= 100) {
             near = sites.asSequence()
-                .filter { it.maxKw >= minKw }
+                .filter { it.maxKw >= minKw && it.op !in profile.excludedOps }
                 .map { it to Geo.fastKm(here.latitude, here.longitude, it.lat, it.lon) }
                 .filter { it.second <= radius }
                 .mapNotNull { (s, d) -> Pricing.quote(s, minKw, profile, now)?.let { Triple(s, d, it) } }

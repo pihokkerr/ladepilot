@@ -63,8 +63,18 @@ data class Plan(
     val optimize: String,
     /** route geometry for drawing: [lat, lon] */
     val route: List<DoubleArray>,
+    /** intermediate destinations in driving order */
+    val vias: List<Place> = emptyList(),
+    /** km along the route where each via is reached */
+    val viaKm: List<Double> = emptyList(),
 ) {
     val totalCost: Double get() = stops.sumOf { it.cost }
+
+    /** intermediate destinations and charging stops merged in driving order, as (lat, lon) */
+    val navPoints: List<Pair<Double, Double>>
+        get() = (vias.mapIndexed { i, v -> viaKm.getOrElse(i) { 0.0 } to (v.lat to v.lon) } +
+            stops.map { it.cand.alongKm to (it.cand.site.lat to it.cand.site.lon) })
+            .sortedBy { it.first }.map { it.second }
     val chargeMinutes: Double get() = stops.sumOf { it.minutes }
 }
 
@@ -80,7 +90,21 @@ object RoutePlanner {
     private const val SAMPLE_KM = 1.0
 
     private class RP(val lat: Double, val lon: Double, val km: Double, val sec: Double)
-    @Volatile private var routeCache: Pair<String, Triple<Double, Double, List<DoubleArray>>>? = null
+    private class RouteData(val km: Double, val sec: Double, val poly: List<DoubleArray>, val legKm: List<Double>)
+    @Volatile private var routeCache: Pair<String, RouteData>? = null
+
+    /**
+     * Best order for intermediate stops (start and destination fixed), using the OSRM trip service.
+     */
+    suspend fun optimizeOrder(origin: Place, vias: List<Place>, dest: Place): List<Place> = withContext(Dispatchers.IO) {
+        if (vias.size < 2) return@withContext vias
+        val all = listOf(origin) + vias + listOf(dest)
+        val coords = all.joinToString(";") { "${it.lon},${it.lat}" }
+        val body = Http.get("https://router.project-osrm.org/trip/v1/driving/$coords?source=first&destination=last&roundtrip=false&overview=false")
+        val wps = JSONObject(body).getJSONArray("waypoints")
+        val order = (0 until wps.length()).map { i -> i to wps.getJSONObject(i).getInt("waypoint_index") }
+        order.filter { it.first in 1..vias.size }.sortedBy { it.second }.map { vias[it.first - 1] }
+    }
 
     /** Keep roughly one point every ~150 m for drawing. */
     private fun simplify(poly: List<DoubleArray>): List<DoubleArray> {
@@ -146,19 +170,26 @@ object RoutePlanner {
         fixedStopIds: List<String> = emptyList(),
         excludedIds: Set<String> = emptySet(),
         optimize: String = "price",
+        vias: List<Place> = emptyList(),
         startMillis: Long = System.currentTimeMillis(),
     ): Plan = withContext(Dispatchers.Default) {
         // ---- 1. route (cached: changing stops or battery does not need a new route)
-        val key = "${origin.lat},${origin.lon};${dest.lat},${dest.lon}"
-        val cached = routeCache?.takeIf { it.first == key }?.second
-        val (totalKm, totalSec, poly) = cached ?: run {
+        val all = listOf(origin) + vias + listOf(dest)
+        val key = all.joinToString(";") { "${it.lat},${it.lon}" }
+        val rd = routeCache?.takeIf { it.first == key }?.second ?: run {
             val url = "https://router.project-osrm.org/route/v1/driving/" +
-                "${origin.lon},${origin.lat};${dest.lon},${dest.lat}?overview=full&geometries=polyline6"
+                all.joinToString(";") { "${it.lon},${it.lat}" } + "?overview=full&geometries=polyline6"
             val body = withContext(Dispatchers.IO) { Http.get(url) }
             val route = JSONObject(body).getJSONArray("routes").getJSONObject(0)
-            Triple(route.getDouble("distance") / 1000.0, route.getDouble("duration"),
-                Geo.decodePolyline(route.getString("geometry"), 6)).also { routeCache = key to it }
+            val legs = route.optJSONArray("legs")
+            val legKm = if (legs == null) emptyList() else (0 until legs.length()).map { legs.getJSONObject(it).getDouble("distance") / 1000.0 }
+            RouteData(route.getDouble("distance") / 1000.0, route.getDouble("duration"),
+                Geo.decodePolyline(route.getString("geometry"), 6), legKm).also { routeCache = key to it }
         }
+        val totalKm = rd.km
+        val totalSec = rd.sec
+        val poly = rd.poly
+        val viaKm = rd.legKm.runningReduce { a, b -> a + b }.take(vias.size)
 
         // ---- 2. resample to ~1 km steps with cumulative distance
         val pts = ArrayList<RP>()
@@ -179,6 +210,7 @@ object RoutePlanner {
         val cands = ArrayList<Candidate>()
         for (s in sites) {
             if (s.maxKw < profile.routeMinKw) continue
+            if (s.op in profile.excludedOps) continue
             if (s.lat < minLat || s.lat > maxLat || s.lon < minLon || s.lon > maxLon) continue
             var best = Double.MAX_VALUE; var bestRp: RP? = null
             for (rp in rps) {
@@ -306,7 +338,7 @@ object RoutePlanner {
         Plan(
             origin, dest, totalKm, totalSec, startSoc, startMillis, stops, arrivalSoc,
             startMillis + ((totalSec + delaySec) * 1000).toLong(), feasible, note, views,
-            fixedStopIds, excludedIds, optimize, simplify(poly),
+            fixedStopIds, excludedIds, optimize, simplify(poly), vias, viaKm,
         )
     }
 }

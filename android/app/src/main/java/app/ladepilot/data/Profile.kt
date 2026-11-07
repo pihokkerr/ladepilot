@@ -46,6 +46,8 @@ data class Profile(
     val optimize: String = "price",
     /** "dark", "liberty" (colourful), "light" */
     val mapStyle: String = "dark",
+    /** operators hidden on the map and ignored by the planner */
+    val excludedOps: Set<String> = emptySet(),
     val baseUrl: String = "https://ladepilot.pages.dev",
     val tariffs: List<Tariff> = Tariffs.presets,
 ) {
@@ -93,7 +95,7 @@ object ProfileStore {
         put("capacityKwh", p.capacityKwh); put("consSummer", p.consSummer); put("consWinter", p.consWinter)
         put("season", p.season); put("marginPct", p.marginPct); put("reservePct", p.reservePct)
         put("startSoc", p.startSoc); put("maxChargeSoc", p.maxChargeSoc); put("lossPct", p.lossPct)
-        put("minKw", p.minKw); put("routeMinKw", p.routeMinKw); put("optimize", p.optimize); put("mapStyle", p.mapStyle); put("baseUrl", p.baseUrl)
+        put("minKw", p.minKw); put("routeMinKw", p.routeMinKw); put("optimize", p.optimize); put("mapStyle", p.mapStyle); put("excludedOps", JSONArray(p.excludedOps.toList())); put("baseUrl", p.baseUrl)
         put("tariffs", JSONArray().apply {
             p.tariffs.forEach { t ->
                 put(JSONObject().apply {
@@ -133,6 +135,7 @@ object ProfileStore {
             routeMinKw = o.optInt("routeMinKw", d.routeMinKw),
             optimize = o.optString("optimize", d.optimize),
             mapStyle = o.optString("mapStyle", d.mapStyle),
+            excludedOps = o.optJSONArray("excludedOps")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet(),
             baseUrl = o.optString("baseUrl", d.baseUrl).ifBlank { d.baseUrl },
             tariffs = tariffs,
         )

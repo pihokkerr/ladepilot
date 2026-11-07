@@ -8,12 +8,12 @@ import android.net.Uri
 object Nav {
     private const val MAPS = "com.google.android.apps.maps"
 
-    /** Google Maps directions with optional charging stops as waypoints. */
-    fun mapsRouteUri(dest: Place, stops: List<Site>): Uri {
+    /** Google Maps directions; [waypoints] = (lat, lon) in driving order (vias and charging stops). */
+    fun mapsRouteUri(dest: Place, waypoints: List<Pair<Double, Double>>): Uri {
         val sb = StringBuilder("https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate")
         sb.append("&destination=").append(dest.lat).append(',').append(dest.lon)
-        if (stops.isNotEmpty()) {
-            sb.append("&waypoints=").append(Uri.encode(stops.joinToString("|") { "${it.lat},${it.lon}" }))
+        if (waypoints.isNotEmpty()) {
+            sb.append("&waypoints=").append(Uri.encode(waypoints.joinToString("|") { "${it.first},${it.second}" }))
         }
         return Uri.parse(sb.toString())
     }

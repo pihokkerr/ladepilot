@@ -202,6 +202,7 @@ internal class MapHolder(private val ctx: Context, private val onTap: (Site) -> 
         plan?.let { p ->
             add(p.origin.lat, p.origin.lon, "#FFFFFF", "#000000", 6.5f)
             add(p.dest.lat, p.dest.lon, "#FF453A", "#000000", 7.5f)
+            p.vias.forEach { v -> add(v.lat, v.lon, "#FFD60A", "#000000", 6.5f) }
         }
         src.setGeoJson(FeatureCollection.fromFeatures(f))
     }
@@ -260,6 +261,7 @@ internal class MapHolder(private val ctx: Context, private val onTap: (Site) -> 
             for (s in DataRepo.sites) {
                 if (s.lat < south || s.lat > north || s.lon < west || s.lon > east) continue
                 if (s.maxKw < kw && s.id !in stopIds) continue
+                if (s.op in prof.excludedOps && s.id !in stopIds) continue
                 vis += s to Pricing.quote(s, kw, prof, now)
             }
             val priced = vis.filter { it.second != null && it.first.id !in stopIds }.sortedBy { it.second!!.eur }
