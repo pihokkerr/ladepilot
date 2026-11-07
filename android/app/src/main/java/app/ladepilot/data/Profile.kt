@@ -44,6 +44,8 @@ data class Profile(
     val routeMinKw: Int = 100,
     /** route stop choice: "price" (cheapest) or "time" (fastest) */
     val optimize: String = "price",
+    /** "dark_osm" (detailed dark), "esri" (clean dark), "light" (OpenStreetMap) */
+    val mapStyle: String = "dark_osm",
     val baseUrl: String = "https://ladepilot.pages.dev",
     val tariffs: List<Tariff> = Tariffs.presets,
 ) {
@@ -91,7 +93,7 @@ object ProfileStore {
         put("capacityKwh", p.capacityKwh); put("consSummer", p.consSummer); put("consWinter", p.consWinter)
         put("season", p.season); put("marginPct", p.marginPct); put("reservePct", p.reservePct)
         put("startSoc", p.startSoc); put("maxChargeSoc", p.maxChargeSoc); put("lossPct", p.lossPct)
-        put("minKw", p.minKw); put("routeMinKw", p.routeMinKw); put("optimize", p.optimize); put("baseUrl", p.baseUrl)
+        put("minKw", p.minKw); put("routeMinKw", p.routeMinKw); put("optimize", p.optimize); put("mapStyle", p.mapStyle); put("baseUrl", p.baseUrl)
         put("tariffs", JSONArray().apply {
             p.tariffs.forEach { t ->
                 put(JSONObject().apply {
@@ -130,6 +132,7 @@ object ProfileStore {
             minKw = o.optInt("minKw", d.minKw),
             routeMinKw = o.optInt("routeMinKw", d.routeMinKw),
             optimize = o.optString("optimize", d.optimize),
+            mapStyle = o.optString("mapStyle", d.mapStyle),
             baseUrl = o.optString("baseUrl", d.baseUrl).ifBlank { d.baseUrl },
             tariffs = tariffs,
         )

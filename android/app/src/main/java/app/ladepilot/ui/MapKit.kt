@@ -2,6 +2,8 @@ package app.ladepilot.ui
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Point
@@ -20,6 +22,7 @@ import org.osmdroid.events.ScrollEvent
 import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.MapTileProviderBasic
 import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.util.MapTileIndex
@@ -128,6 +131,48 @@ internal class MapHolder(ctx: Context, onTap: (Site) -> Unit) {
     val view: MapView
     val pins = ChargerOverlay(onTap)
     private val routeLine = Polyline()
+    private val esriBase = EsriSource("EsriDarkBase", "World_Dark_Gray_Base")
+    private lateinit var labels: TilesOverlay
+    private var style: String? = null
+
+    /** OpenStreetMap turned dark: invert + rotate hues back, so water stays blue and roads stay bright. */
+    private val darkFilter = ColorMatrixColorFilter(ColorMatrix(floatArrayOf(
+        -1f, 0f, 0f, 0f, 255f,
+        0f, -1f, 0f, 0f, 255f,
+        0f, 0f, -1f, 0f, 255f,
+        0f, 0f, 0f, 1f, 0f,
+    )).apply {
+        postConcat(ColorMatrix(floatArrayOf(
+            -0.574f, 1.430f, 0.144f, 0f, 0f,
+            0.426f, 0.430f, 0.144f, 0f, 0f,
+            0.426f, 1.430f, -0.856f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f,
+        )))
+        postConcat(ColorMatrix().apply { setScale(0.82f, 0.86f, 0.95f, 1f) })
+    })
+
+    fun applyStyle(s: String) {
+        if (s == style) return
+        style = s
+        when (s) {
+            "esri" -> {
+                view.setTileSource(esriBase)
+                view.overlayManager.tilesOverlay.setColorFilter(null)
+                labels.isEnabled = true
+            }
+            "light" -> {
+                view.setTileSource(TileSourceFactory.MAPNIK)
+                view.overlayManager.tilesOverlay.setColorFilter(null)
+                labels.isEnabled = false
+            }
+            else -> {
+                view.setTileSource(TileSourceFactory.MAPNIK)
+                view.overlayManager.tilesOverlay.setColorFilter(darkFilter)
+                labels.isEnabled = false
+            }
+        }
+        view.invalidate()
+    }
     var profile: Profile? = null
     var plan: Plan? = null
         private set
@@ -140,7 +185,7 @@ internal class MapHolder(ctx: Context, onTap: (Site) -> Unit) {
             osmdroidTileCache = File(ctx.cacheDir, "osmdroid/tiles")
         }
         view = MapView(ctx)
-        view.setTileSource(EsriSource("EsriDarkBase", "World_Dark_Gray_Base"))
+        view.setTileSource(TileSourceFactory.MAPNIK)
         view.setMultiTouchControls(true)
         view.zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
         view.setMinZoomLevel(5.0)
@@ -148,7 +193,7 @@ internal class MapHolder(ctx: Context, onTap: (Site) -> Unit) {
         view.setTilesScaledToDpi(true)
         view.overlayManager.tilesOverlay.setLoadingBackgroundColor(0xFF0E0E10.toInt())
         view.overlayManager.tilesOverlay.setLoadingLineColor(0xFF0E0E10.toInt())
-        val labels = TilesOverlay(MapTileProviderBasic(ctx, EsriSource("EsriDarkRef", "World_Dark_Gray_Reference")), ctx)
+        labels = TilesOverlay(MapTileProviderBasic(ctx, EsriSource("EsriDarkRef", "World_Dark_Gray_Reference")), ctx)
         labels.setLoadingBackgroundColor(Color.TRANSPARENT)
         labels.setLoadingLineColor(Color.TRANSPARENT)
         view.overlays.add(labels)
@@ -159,8 +204,15 @@ internal class MapHolder(ctx: Context, onTap: (Site) -> Unit) {
         routeLine.infoWindow = null
         view.overlays.add(routeLine)
         view.overlays.add(pins)
-        view.controller.setZoom(9.0)
-        view.controller.setCenter(GeoPoint(48.2, 16.37))
+        val here = app.ladepilot.data.LocationHelper.last(ctx)
+        if (here != null) {
+            view.controller.setZoom(12.0)
+            view.controller.setCenter(GeoPoint(here.latitude, here.longitude))
+            pins.me = GeoPoint(here.latitude, here.longitude)
+        } else {
+            view.controller.setZoom(9.0)
+            view.controller.setCenter(GeoPoint(48.2, 16.37))
+        }
         view.addMapListener(DelayedMapListener(object : MapListener {
             override fun onScroll(event: ScrollEvent?): Boolean { refresh(); return true }
             override fun onZoom(event: ZoomEvent?): Boolean { refresh(); return true }

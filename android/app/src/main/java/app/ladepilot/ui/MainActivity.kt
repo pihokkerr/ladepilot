@@ -401,11 +401,10 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
         holder.view.onResume()
         onDispose { holder.view.onPause() }
     }
-    SideEffect { holder.profile = profile; holder.minKw = profile.minKw }
+    SideEffect { holder.profile = profile; holder.minKw = profile.minKw; holder.applyStyle(profile.mapStyle) }
     LaunchedEffect(ver, tick, profile) {
         val l = LocationHelper.last(ctx)
         holder.pins.me = l?.let { org.osmdroid.util.GeoPoint(it.latitude, it.longitude) }
-        if (plan == null && l != null && ver <= 2) holder.view.controller.setCenter(org.osmdroid.util.GeoPoint(l.latitude, l.longitude))
         holder.refresh()
     }
     LaunchedEffect(plan) { holder.setPlan(plan) }
@@ -433,7 +432,7 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
     )
     BottomSheetScaffold(
         scaffoldState = sheet,
-        sheetPeekHeight = if (plan != null) 210.dp else 110.dp,
+        sheetPeekHeight = if (plan != null) 64.dp else 40.dp,
         sheetContainerColor = Card1,
         containerColor = Bg,
         sheetContent = {
@@ -444,6 +443,15 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                 if (busy) item { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Tervezés…", color = Muted) } }
                 error?.let { e -> item { Text(e, color = Bad) } }
                 val p = plan
+                if (p != null) item {
+                    val total = (p.arrivalMillis - p.startMillis) / 1000.0
+                    Text(
+                        "${p.distanceKm.roundToInt()} km · ${fmtDuration(total)} · " +
+                            (if (p.stops.isEmpty()) "töltés nélkül" else "${p.stops.size}× töltés · ${Pricing.eurText(p.totalCost)}") +
+                            " · érk. ${Pricing.hhmm(p.arrivalMillis)}",
+                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 if (p == null) {
                     item {
                         Text(if (dest == null) "Hová mész? Add meg fent az úti célt." else "Tervezés…", fontWeight = FontWeight.SemiBold)
@@ -676,7 +684,11 @@ private fun PlanSummary(p: Plan) {
     Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("→ ${p.dest.name}", fontWeight = FontWeight.Bold, fontSize = 18.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            Text("${p.distanceKm.roundToInt()} km · vezetés ${fmtDuration(p.durationSec)} · érkezés ${Pricing.hhmm(p.arrivalMillis)}", color = Muted, fontSize = 13.sp)
+            val total = (p.arrivalMillis - p.startMillis) / 1000.0
+            val driving = total - p.chargeMinutes * 60 - p.stops.size * 300
+            Text("${p.distanceKm.roundToInt()} km · vezetés ${fmtDuration(driving)} (kitérőkkel)", color = Muted, fontSize = 13.sp)
+            Text("Teljes menetidő töltéssel: ${fmtDuration(total)} · érkezés ${Pricing.hhmm(p.arrivalMillis)}",
+                fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             when {
                 !p.feasible -> Text(p.note ?: "Nem tervezhető", color = Bad)
@@ -764,6 +776,12 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("auto" to "Évszak: auto", "summer" to "Nyár", "winter" to "Tél").forEach { (k, l) ->
                             FilterChip(selected = profile.season == k, onClick = { onProfile(profile.copy(season = k)) }, label = { Text(l) })
+                        }
+                    }
+                    Text("TÉRKÉP", color = Muted, fontSize = 12.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("dark_osm" to "Sötét részletes", "esri" to "Sötét letisztult", "light" to "Világos").forEach { (k, l) ->
+                            FilterChip(selected = profile.mapStyle == k, onClick = { onProfile(profile.copy(mapStyle = k)) }, label = { Text(l) })
                         }
                     }
                     Text("Autópályás átlag a fórumok alapján: nyáron kb. 18–20, télen 22–25 kWh/100 km (130 km/h).", color = Muted, fontSize = 12.sp)
