@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Place
@@ -72,6 +73,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import android.webkit.GeolocationPermissions
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import app.ladepilot.data.Availability
 import app.ladepilot.data.DataRepo
 import app.ladepilot.data.Geo
@@ -142,13 +149,15 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun App() {
     val ctx = LocalContext.current
-    var tab by rememberSaveable { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableIntStateOf(3) }
     var profile by remember { mutableStateOf(ProfileStore.load(ctx)) }
     val onProfile: (Profile) -> Unit = { p -> profile = p; ProfileStore.save(ctx, p) }
     Scaffold(
         containerColor = Bg,
         bottomBar = {
             NavigationBar(containerColor = Card1) {
+                NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
+                    icon = { Icon(Icons.Filled.Home, null) }, label = { Text("Térkép") })
                 NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
                     icon = { Icon(Icons.Filled.LocationOn, null) }, label = { Text("Közeli") })
                 NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
@@ -160,12 +169,45 @@ private fun App() {
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize().background(Bg)) {
             when (tab) {
+                3 -> MapTab(profile)
                 0 -> NearbyTab(profile)
                 1 -> RouteTab(profile, onProfile)
                 else -> ProfileTab(profile, onProfile)
             }
         }
     }
+}
+
+// ================================================================== map (the Ladepilot web map inside the app)
+@Composable
+private fun MapTab(profile: Profile) {
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { ctx ->
+            WebView(ctx).apply {
+                setBackgroundColor(0xFF0B0B0C.toInt())
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.setGeolocationEnabled(true)
+                webChromeClient = object : WebChromeClient() {
+                    override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
+                        callback?.invoke(origin, LocationHelper.hasPermission(ctx), false)
+                    }
+                }
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                        val u = request.url
+                        val own = u.host == Uri.parse(profile.baseUrl).host
+                        val tiles = u.host?.endsWith("arcgisonline.com") == true
+                        if (own || tiles) return false
+                        // Google Maps navigation links and anything else: open outside
+                        return try { Nav.open(ctx, u); true } catch (e: Exception) { true }
+                    }
+                }
+                loadUrl(profile.baseUrl)
+            }
+        },
+    )
 }
 
 // ================================================================== shared bits
@@ -181,9 +223,18 @@ private fun Header(title: String, sub: String?, actions: @Composable () -> Unit 
 }
 
 @Composable
-private fun Price(site: Site, eur: Double, best: Boolean = false, big: Boolean = false) {
+private fun PriceQ(site: Site, q: Quote, best: Boolean = false, big: Boolean = false) {
+    if (q.free) {
+        Text("Ingyenes", fontSize = if (big) 28.sp else 15.sp, fontWeight = FontWeight.Bold, color = Good)
+    } else {
+        Price(site, q.eur, best, big, prefix = if (q.estimated) "~" else "")
+    }
+}
+
+@Composable
+private fun Price(site: Site, eur: Double, best: Boolean = false, big: Boolean = false, prefix: String = "") {
     Row(verticalAlignment = Alignment.Bottom) {
-        Text(Pricing.label(site, eur), fontSize = if (big) 40.sp else 24.sp, fontWeight = FontWeight.Bold,
+        Text(prefix + Pricing.label(site, eur), fontSize = if (big) 40.sp else 24.sp, fontWeight = FontWeight.Bold,
             color = if (best) Good else MaterialTheme.colorScheme.onSurface)
         Text(" " + Pricing.unit(site), fontSize = 12.sp, color = Muted, modifier = Modifier.padding(bottom = if (big) 8.dp else 3.dp))
     }
@@ -259,7 +310,7 @@ private fun NearbyTab(profile: Profile) {
             }
             rows.isEmpty() -> Text("Nincs töltő árral 40 km-en belül.", color = Muted)
             else -> {
-                val bestEur = rows.first().quote.eur
+                val bestEur = rows.firstOrNull { !it.quote.free }?.quote?.eur ?: 0.0
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(rows, key = { it.site.id }) { r ->
                         Card(
@@ -268,7 +319,7 @@ private fun NearbyTab(profile: Profile) {
                             modifier = Modifier.fillMaxWidth().clickable { detail = r.site },
                         ) {
                             Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Box(Modifier.width(84.dp)) { Price(r.site, r.quote.eur, best = r.quote.eur <= bestEur + 0.02) }
+                                Box(Modifier.width(84.dp)) { PriceQ(r.site, r.quote, best = !r.quote.free && r.quote.eur <= bestEur + 0.02) }
                                 Column(Modifier.weight(1f)) {
                                     Text(r.site.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     Text(
@@ -304,10 +355,13 @@ private fun SiteDialog(site: Site, profile: Profile, onDismiss: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(site.op + if (site.addr.isNotBlank()) " · ${site.addr}" else "", color = Muted, fontSize = 13.sp)
                 if (q != null) {
-                    Price(site, q.eur, big = true)
+                    PriceQ(site, q, big = true)
+                    if (q.estimated) Text(
+                        if (q.baseEur == 0.0) "Percdíjas töltő – ${Pricing.eurText(q.eurMin ?: 0.0)}/perc, ${Pricing.effectiveKw(q.kw).roundToInt()} kW átlaggal számolva"
+                        else "Benne: ${Pricing.perKwh(site, q.energyEur)} + ${Pricing.eurText(q.eurMin ?: 0.0)}/perc",
+                        color = Muted, fontSize = 12.sp)
                     if (site.cur == "HUF") Text("≈ ${Pricing.eurText(q.eur)} / kWh", color = Muted, fontSize = 13.sp)
                     q.tariff?.let { Text("${it.name} – ad-hoc ár: ${Pricing.perKwh(site, q.baseEur)}", color = Muted, fontSize = 13.sp) }
-                    if (q.eurMin != null && q.eurMin > 0) Text("+ ${Pricing.eurText(q.eurMin)} / perc", color = Muted, fontSize = 13.sp)
                 } else Text("Nincs árinformáció", color = Muted)
                 Pricing.nextChange(site)?.let { (at, eur) ->
                     val eff = Pricing.applyTariffs(site, eur, profile.tariffs).first
@@ -462,7 +516,7 @@ private fun RouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                 Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth().clickable(enabled = v.reachable) { runPlan(p.dest, s.id) }) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.width(76.dp)) { Price(s, q.eur) }
+                        Box(Modifier.width(76.dp)) { PriceQ(s, q) }
                         Column(Modifier.weight(1f)) {
                             Text(s.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 color = if (v.reachable) Color.Unspecified else Muted)
@@ -526,7 +580,7 @@ private fun StopCard(st: app.ladepilot.data.ChargeStop) {
                     Text(s.name, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text("${st.cand.alongKm.roundToInt()}. km · érkezés ${Pricing.hhmm(st.etaMillis)} · ${s.op}", color = Muted, fontSize = 12.sp)
                 }
-                Price(s, st.quote.eur)
+                PriceQ(s, st.quote)
             }
             Text(
                 "${st.arrivalSoc.roundToInt()}% → ${st.targetSoc.roundToInt()}%  ·  ${st.kwhBattery.roundToInt()} kWh  ·  ${st.minutes.roundToInt()} perc  ·  ${Pricing.money(s, st.cost)}",

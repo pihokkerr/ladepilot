@@ -175,7 +175,7 @@ class NearbyScreen(ctx: CarContext) : Screen(ctx), DefaultLifecycleObserver {
         for ((s, d, q) in near) {
             val av = Pricing.availability(s, minKw)
             val line = buildString {
-                append(Pricing.label(s, q.eur)).append(' ').append(Pricing.unit(s))
+                append(if (q.free) "ingyenes" else Pricing.labelQ(s, q) + " " + Pricing.unit(s))
                 append(" · ").append(Geo.fmtKm(d))
                 append(" · ").append(q.kw).append(" kW")
                 if (av != null) append(" · ").append(av.free).append('/').append(av.known).append(" szabad")
@@ -185,7 +185,7 @@ class NearbyScreen(ctx: CarContext) : Screen(ctx), DefaultLifecycleObserver {
                     .setTitle(s.name)
                     .addText(line)
                     .addText(s.op + (q.tariff?.let { " · ${it.name}" } ?: ""))
-                    .setMetadata(Metadata.Builder().setPlace(placeFor(s, Pricing.label(s, q.eur))).build())
+                    .setMetadata(Metadata.Builder().setPlace(placeFor(s, Pricing.labelQ(s, q))).build())
                     .setOnClickListener { screenManager.push(DetailScreen(carContext, s.id)) }
                     .build()
             )
@@ -205,7 +205,7 @@ class DetailScreen(ctx: CarContext, private val siteId: String) : Screen(ctx) {
         val pane = Pane.Builder()
 
         val priceRow = Row.Builder().setTitle(
-            if (q != null) Pricing.perKwh(s, q.eur) + (if (s.daily != null || s.abs != null) " most" else "") else "Nincs árinformáció"
+            if (q != null) Pricing.headline(s, q) + (if (s.daily != null || s.abs != null) " most" else "") else "Nincs árinformáció"
         )
         val sub = buildList {
             if (q?.tariff != null) add("${q.tariff.name} (ad-hoc: ${Pricing.perKwh(s, q.baseEur)})")
@@ -327,9 +327,9 @@ class RouteScreen(ctx: CarContext) : Screen(ctx) {
             list.addItem(
                 Row.Builder()
                     .setTitle("★ ${s.name}")
-                    .addText("${st.cand.alongKm.roundToInt()}. km · ${Pricing.hhmm(st.etaMillis)} · ${Pricing.perKwh(s, st.quote.eur)}")
+                    .addText("${st.cand.alongKm.roundToInt()}. km · ${Pricing.hhmm(st.etaMillis)} · ${Pricing.headline(s, st.quote)}")
                     .addText("${st.arrivalSoc.roundToInt()}% → ${st.targetSoc.roundToInt()}% · ${st.minutes.roundToInt()} perc · ${Pricing.money(s, st.cost)}")
-                    .setMetadata(Metadata.Builder().setPlace(placeFor(s, Pricing.label(s, st.quote.eur))).build())
+                    .setMetadata(Metadata.Builder().setPlace(placeFor(s, Pricing.labelQ(s, st.quote))).build())
                     .setOnClickListener { screenManager.push(DetailScreen(carContext, s.id)) }
                     .build()
             )
@@ -348,9 +348,9 @@ class RouteScreen(ctx: CarContext) : Screen(ctx) {
                 list.addItem(
                     Row.Builder()
                         .setTitle(s.name)
-                        .addText("${v.cand.alongKm.roundToInt()}. km · ${Pricing.perKwh(s, q.eur)} · ${q.kw} kW")
+                        .addText("${v.cand.alongKm.roundToInt()}. km · ${Pricing.headline(s, q)} · ${q.kw} kW")
                         .addText("érkezéskor ${v.arrivalSoc.roundToInt()}%")
-                        .setMetadata(Metadata.Builder().setPlace(placeFor(s, Pricing.label(s, q.eur))).build())
+                        .setMetadata(Metadata.Builder().setPlace(placeFor(s, Pricing.labelQ(s, q))).build())
                         .setOnClickListener { screenManager.push(DetailScreen(carContext, s.id)) }
                         .build()
                 )

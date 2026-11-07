@@ -19,7 +19,8 @@ Output format (compact arrays to keep the file small)
     "ops":   ["Operator A", "Operator B", ...],
     "sites": [[id, name, opIndex, lat, lon, address, country, points, schedule?], ...]
   }
-  points   = [[kw, plugs, eurPerKwh|null, eurPerMin|null, status], ...]
+  points   = [[kw, plugs, eurPerKwh|null, eurPerMin|null, status, flags?], ...]
+             flags: 1 = free of charge (FREE pricing policy)
   plugs    = short string, e.g. "CCS", "T2", "CCS+CHA"
   status   = 0 unknown, 1 available, 2 occupied, 3 out of service
   schedule = optional [[startMinute, endMinute, eurPerKwh], ...] (local wall clock) or null
@@ -134,8 +135,12 @@ def r2(x):
 
 # ---------------------------------------------------------------- Austria
 def parse_at_rates(new_rates):
-    """E-Control status -> (eur_per_kwh, eur_per_min)."""
+    """E-Control status -> (eur_per_kwh, eur_per_min, free)."""
     kwh = per_min = None
+    policies = {str((x or {}).get("value")).upper()
+                for x in as_list(((new_rates or {}).get("energyPricingPolicy") or {}).get("pricingPolicy"))}
+    if "FREE" in policies:
+        return 0.0, None, True
     for coll in as_list((new_rates or {}).get("rateLineCollection")):
         for line in as_list(coll.get("rateLine")):
             typ = str(((line.get("rateLineType") or {}).get("value")) or "").upper()
@@ -158,33 +163,16 @@ def parse_at_rates(new_rates):
                     except ValueError:
                         pass
                 per_min = val / minutes
-    return r2(kwh), (r2(per_min) if per_min else None)
+    # 0 or ~0 €/kWh without FREE policy = per-minute tariff or placeholder, not a real kWh price
+    if kwh is not None and kwh < 0.05:
+        kwh = None
+    return r2(kwh), (r2(per_min) if per_min else None), False
 
 
 def build_at(table, status):
     # 1) live status + price per refill point id
     live = {}
     site_status = find_key(status, "energyInfrastructureSiteStatus") or []
-    # --- diagnostics: which rate line types exist, and what do zero-priced points look like
-    import collections
-    types = collections.Counter()
-    zero_samples = []
-    for ss in site_status:
-        for st in as_list(ss.get("energyInfrastructureStationStatus")):
-            for rp in as_list(st.get("refillPointStatus")):
-                nr = rp.get("newRates") or {}
-                pol = tuple(sorted(str((x or {}).get("value")) for x in as_list((nr.get("energyPricingPolicy") or {}).get("pricingPolicy"))))
-                lines = [(str(((l.get("rateLineType") or {}).get("value"))), l.get("value"), l.get("incrementPeriod"))
-                         for c in as_list(nr.get("rateLineCollection")) for l in as_list(c.get("rateLine"))]
-                for t, v, inc in lines:
-                    types[(t, "zero" if v == 0 else "pos", inc)] += 1
-                types[("POLICY",) + pol] += 1
-                if any(t == "PER_UNIT" and v == 0 for t, v, _ in lines) and len(zero_samples) < 6:
-                    zero_samples.append(json.dumps(nr, ensure_ascii=False)[:700])
-    for k, v in types.most_common(40):
-        print("  rate", k, v, file=sys.stderr)
-    for z in zero_samples:
-        print("  zero-sample", z, file=sys.stderr)
     for ss in site_status:
         for st in as_list(ss.get("energyInfrastructureStationStatus")):
             for rp in as_list(st.get("refillPointStatus")):
@@ -192,8 +180,8 @@ def build_at(table, status):
                 if not rid:
                     continue
                 code = STATUS_CODES.get(str(((rp.get("status") or {}).get("value")) or "").upper(), 0)
-                kwh, per_min = parse_at_rates(rp.get("newRates"))
-                live[rid] = (code, kwh, per_min)
+                kwh, per_min, free = parse_at_rates(rp.get("newRates"))
+                live[rid] = (code, kwh, per_min, free)
 
     # 2) static sites
     sites_raw = []
@@ -223,8 +211,11 @@ def build_at(table, status):
                 watts = max((cn.get("maxPowerAtSocket") or 0) for cn in conns) if conns else 0
                 kw = round(watts / 1000) if watts > 1000 else round(watts)  # some report kW
                 plugs = plug_code(((cn.get("connectorType") or {}).get("value")) for cn in conns)
-                code, kwh, per_min = live.get(rp.get("id"), (0, None, None))
-                points.append([kw, plugs, kwh, per_min, code])
+                code, kwh, per_min, free = live.get(rp.get("id"), (0, None, None, False))
+                pt = [kw, plugs, kwh, per_min, code]
+                if free:
+                    pt.append(1)
+                points.append(pt)
         if not points:
             continue
         name = text(s.get("name")) or op

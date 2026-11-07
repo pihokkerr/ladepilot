@@ -210,7 +210,7 @@ object RoutePlanner {
                 val kwhBat = (target - arrival) / 100.0 * cap
                 val billed = kwhBat * loss
                 val mins = chargeMinutes(arrival, target, q.kw, cap)
-                val cost = billed * q.eur + (q.eurMin ?: 0.0) * mins +
+                val cost = billed * q.energyEur + (q.eurMin ?: 0.0) * mins +
                     ((c.site.startFeeLocal ?: 0.0) / c.site.fx)
                 // prefer cheap energy; penalise stops that will not get us to the destination,
                 // detours and (lightly) long charging times
@@ -219,7 +219,7 @@ object RoutePlanner {
                     // minutes lost: charging + detour (+ a full extra stop if this one is not enough)
                     mins + detourSec(c) / 60 + (if (extraStop) 25.0 else 0.0) + q.eur * 2
                 } else {
-                    q.eur + (if (extraStop) 0.08 else 0.0) + c.offKm * 0.004 + mins * 0.0008 + (q.eurMin ?: 0.0) * 1.5
+                    q.eur + (if (extraStop) 0.08 else 0.0) + c.offKm * 0.004 + mins * 0.0008
                 }
                 if (score < bestScore) {
                     bestScore = score

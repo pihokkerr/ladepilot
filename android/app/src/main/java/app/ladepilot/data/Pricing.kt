@@ -7,13 +7,18 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 data class Quote(
-    /** effective price per kWh in EUR (after the user's tariff) */
+    /** comparable price per kWh in EUR: tariffed energy price + per-minute fee converted to kWh */
     val eur: Double,
-    /** ad-hoc price per kWh in EUR */
+    /** energy part per kWh after the user's tariff (EUR) */
+    val energyEur: Double,
+    /** ad-hoc energy price per kWh (EUR), 0 if the charger only bills per minute */
     val baseEur: Double,
     val tariff: Tariff?,
     val eurMin: Double?,
     val kw: Int,
+    /** true when [eur] contains an estimate from a per-minute fee */
+    val estimated: Boolean = false,
+    val free: Boolean = false,
 )
 
 data class Availability(val free: Int, val known: Int, val total: Int, val off: Int)
@@ -66,18 +71,41 @@ object Pricing {
         return best to used
     }
 
-    /** Cheapest effective price among points with at least [minKw]. */
+    /** Average power a Model Y actually draws: AC limited by the 11 kW on-board charger. */
+    fun effectiveKw(kw: Int): Double = if (kw <= 22) kw.coerceIn(3, 11).toDouble() else (kw * 0.7).coerceAtMost(110.0)
+
+    /** Cheapest comparable price among points with at least [minKw]. */
     fun quote(site: Site, minKw: Int, profile: Profile, atMillis: Long = System.currentTimeMillis()): Quote? {
         var best: Quote? = null
         for (p in site.points) {
             if (p.kw < minKw) continue
-            val base = baseEur(site, p, atMillis) ?: continue
-            val (eff, t) = applyTariffs(site, base, profile.tariffs)
-            if (best == null || eff < best.eur || (eff == best.eur && p.kw > best.kw)) {
-                best = Quote(eff, base, t, p.eurMin, p.kw)
+            val q = if (p.free) {
+                Quote(0.0, 0.0, 0.0, null, null, p.kw, free = true)
+            } else {
+                val base = baseEur(site, p, atMillis)
+                val perMin = p.eurMin?.takeIf { it > 0 }
+                if (base == null && perMin == null) continue
+                val (energy, t) = if (base != null) applyTariffs(site, base, profile.tariffs) else (0.0 to null)
+                val timePart = (perMin ?: 0.0) * 60.0 / effectiveKw(p.kw)
+                Quote(energy + timePart, energy, base ?: 0.0, t, perMin, p.kw, estimated = timePart > 0)
             }
+            if (best == null || q.eur < best.eur || (q.eur == best.eur && p.kw > best.kw)) best = q
         }
         return best
+    }
+
+    /** Marker / list label: "52", "~61" (estimated from per-minute fee), "0" for free. */
+    fun labelQ(site: Site, q: Quote): String = when {
+        q.free -> "0"
+        q.estimated -> "~" + label(site, q.eur)
+        else -> label(site, q.eur)
+    }
+
+    /** Headline text for a quote. */
+    fun headline(site: Site, q: Quote): String = when {
+        q.free -> "Ingyenes"
+        q.estimated && q.baseEur == 0.0 -> "~" + perKwh(site, q.eur) + " (percdíj alapján becsülve)"
+        else -> perKwh(site, q.energyEur)
     }
 
     fun availability(site: Site, minKw: Int): Availability? {

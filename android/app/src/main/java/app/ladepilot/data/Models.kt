@@ -8,6 +8,8 @@ data class ChargePoint(
     val eurMin: Double?,
     /** 0 unknown, 1 available, 2 occupied, 3 out of service */
     val status: Int,
+    /** free of charge */
+    val free: Boolean = false,
 )
 
 /** Recurring time-of-day price (local wall clock, minutes after midnight). */

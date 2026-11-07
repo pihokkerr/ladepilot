@@ -219,12 +219,18 @@ function siteInfo(s){
   if (!pts.length) return null;
   let kwh = null, perMin = null, free = 0, known = 0, off = 0;
   const sched = s.schedule ? schedPrice(s.schedule) : s.abs ? absPrice(s.abs) : null;
+  let est = false, freeOf = false;
   for (const p of pts) {
-    const price = sched ?? p[2];
-    if (price != null && (kwh == null || price < kwh)) { kwh = price; perMin = p[3]; }
+    const isFree = (p[5] || 0) & 1;
+    const energy = isFree ? 0 : (sched ?? p[2]);
+    const pm = isFree ? 0 : (p[3] || 0);
+    if (energy == null && !pm) continue;
+    // per-minute fees converted to €/kWh with the power a Model Y really draws
+    const price = (energy || 0) + pm * 60 / effKw(p[0] || 0);
+    if (kwh == null || price < kwh) { kwh = price; perMin = pm || null; est = pm > 0; freeOf = !!isFree; }
     if (p[4]) { known++; if (p[4] === 1) free++; if (p[4] === 3) off++; }
   }
-  return { pts, kwh, perMin, free, known, off, total: pts.length, maxKw: Math.max(...pts.map(p => p[0] || 0)) };
+  return { pts, kwh, perMin, est, freeOf, free, known, off, total: pts.length, maxKw: Math.max(...pts.map(p => p[0] || 0)) };
 }
 function absPrice(abs, t){
   const now = (t || Date.now()) / 1000; let v = null;
@@ -237,6 +243,7 @@ function nextChange(s){
   const n = s.abs.find(([at, eur]) => at > now && eur !== cur);
   return n ? { at: new Date(n[0] * 1000), eur: n[1] } : null;
 }
+function effKw(kw){ return kw <= 22 ? Math.min(Math.max(kw, 3), 11) : Math.min(kw * 0.7, 110); }
 function schedPrice(sched){
   const m = nowMinutes();
   for (const [a, b, v] of sched) if (m >= a && m < b) return v;
@@ -316,7 +323,7 @@ function render(){
       const full = info.known && info.free === 0;
       const cls = ["pill", isBest ? "best" : "", info.kwh == null ? "na" : "", S.sel === s.id ? "sel" : "", full ? "full" : ""].join(" ");
       const avail = info.known ? `<sub>${info.free}/${info.known}</sub>` : "";
-      const html = `<div class="${cls}"><i style="background:${powerColor(info.maxKw)}"></i>${info.kwh != null ? pnum(s, info.kwh) : "–"}${avail}</div>`;
+      const html = `<div class="${cls}"><i style="background:${powerColor(info.maxKw)}"></i>${info.freeOf ? "0" : info.kwh != null ? (info.est ? "~" : "") + pnum(s, info.kwh) : "–"}${avail}</div>`;
       L.marker([s.lat, s.lon], { icon: L.divIcon({ html, className: "", iconSize: [0, 0] }), zIndexOffset: isBest ? 1000 : (S.sel === s.id ? 2000 : Math.round(-(info.kwh ?? 9) * 100)) })
         .on("click", () => select(s.id)).addTo(layer);
     } else {
@@ -341,9 +348,9 @@ function renderList(priced, bestSet, total){
   if (!priced.length) { $("list").innerHTML = `<div class="empty">Ezen a területen nincs a szűrőnek megfelelő töltő árral.<br>Húzd odébb vagy kicsinyítsd a térképet.</div>`; return; }
   $("list").innerHTML = priced.slice(0, 60).map(({ s, info, d }) => `
     <button class="row" data-id="${esc(s.id)}">
-      <div class="price ${bestSet.has(s.id) ? "best" : ""}">${pnum(s, info.kwh)}<small>${punit(s)}</small></div>
+      <div class="price ${bestSet.has(s.id) ? "best" : ""}">${info.freeOf ? "0<small>ingyen</small>" : `${info.est ? "~" : ""}${pnum(s, info.kwh)}<small>${punit(s)}</small>`}</div>
       <div style="min-width:0"><div class="rname">${esc(s.name)}</div>
-        <div class="rsub">${esc(s.op)} · ${d < 10 ? d.toFixed(1) : Math.round(d)} km${info.perMin ? ` · +${ct(info.perMin)} ct/perc` : ""}</div></div>
+        <div class="rsub">${esc(s.op)} · ${d < 10 ? d.toFixed(1) : Math.round(d)} km${info.est ? " · percdíjjal együtt" : ""}</div></div>
       <div><div class="kw"><i style="background:${powerColor(info.maxKw)}"></i>${info.maxKw} kW</div>${availText(info)}</div>
     </button>`).join("");
 }

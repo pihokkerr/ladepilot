@@ -193,9 +193,10 @@ object DataRepo {
             val kwh = r.optDouble()
             val perMin = r.optDouble()
             val status = r.optDouble()?.toInt() ?: 0
+            val flags = if (r.hasNext()) (r.optDouble()?.toInt() ?: 0) else 0
             while (r.hasNext()) r.skipValue()
             r.endArray()
-            points += ChargePoint(kw, plugs, kwh, perMin, status)
+            points += ChargePoint(kw, plugs, kwh, perMin, status, flags and 1 == 1)
         }
         r.endArray()
         var daily: List<DailyPrice>? = null
