@@ -1,0 +1,35 @@
+name: Keresés az adatokban (hibakeresés)
+
+on:
+  workflow_dispatch:
+    inputs:
+      term:
+        description: "Keresett szöveg (név vagy üzemeltető)"
+        required: true
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Ausztria letöltése
+        env:
+          ECONTROL_API_KEY: ${{ secrets.ECONTROL_API_KEY }}
+        run: python pipeline/build.py at --out out/at.json
+      - name: Keresés
+        env:
+          TERM_Q: ${{ github.event.inputs.term }}
+        run: |
+          python - <<'PY'
+          import json, os
+          q = os.environ["TERM_Q"].lower()
+          d = json.load(open("out/at.json"))
+          hits = [s for s in d["sites"] if q in s[1].lower() or q in d["ops"][s[2]].lower() or q in (s[5] or "").lower()]
+          print(f"{len(hits)} találat")
+          for s in hits[:50]:
+              print(d["ops"][s[2]], "|", s[1], "|", s[5], "|", s[3], s[4], "|", s[7])
+          PY
