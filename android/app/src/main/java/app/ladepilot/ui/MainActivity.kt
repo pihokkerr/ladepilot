@@ -25,15 +25,25 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.input.ImeAction
+import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomSheetScaffold
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.rememberBottomSheetScaffoldState
+import androidx.compose.material3.rememberStandardBottomSheetState
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -55,7 +65,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -74,11 +88,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import android.webkit.GeolocationPermissions
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceRequest
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import app.ladepilot.data.Availability
 import app.ladepilot.data.DataRepo
 import app.ladepilot.data.Geo
@@ -157,11 +166,9 @@ private fun App() {
         bottomBar = {
             NavigationBar(containerColor = Card1) {
                 NavigationBarItem(selected = tab == 3, onClick = { tab = 3 },
-                    icon = { Icon(Icons.Filled.Home, null) }, label = { Text("Térkép") })
+                    icon = { Icon(Icons.Filled.Place, null) }, label = { Text("Térkép") })
                 NavigationBarItem(selected = tab == 0, onClick = { tab = 0 },
                     icon = { Icon(Icons.Filled.LocationOn, null) }, label = { Text("Közeli") })
-                NavigationBarItem(selected = tab == 1, onClick = { tab = 1 },
-                    icon = { Icon(Icons.Filled.Place, null) }, label = { Text("Útvonal") })
                 NavigationBarItem(selected = tab == 2, onClick = { tab = 2 },
                     icon = { Icon(Icons.Filled.Person, null) }, label = { Text("Profil") })
             }
@@ -169,45 +176,12 @@ private fun App() {
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize().background(Bg)) {
             when (tab) {
-                3 -> MapTab(profile)
+                3 -> MapRouteTab(profile, onProfile)
                 0 -> NearbyTab(profile)
-                1 -> RouteTab(profile, onProfile)
                 else -> ProfileTab(profile, onProfile)
             }
         }
     }
-}
-
-// ================================================================== map (the Ladepilot web map inside the app)
-@Composable
-private fun MapTab(profile: Profile) {
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            WebView(ctx).apply {
-                setBackgroundColor(0xFF0B0B0C.toInt())
-                settings.javaScriptEnabled = true
-                settings.domStorageEnabled = true
-                settings.setGeolocationEnabled(true)
-                webChromeClient = object : WebChromeClient() {
-                    override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
-                        callback?.invoke(origin, LocationHelper.hasPermission(ctx), false)
-                    }
-                }
-                webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                        val u = request.url
-                        val own = u.host == Uri.parse(profile.baseUrl).host
-                        val tiles = u.host?.endsWith("arcgisonline.com") == true
-                        if (own || tiles) return false
-                        // Google Maps navigation links and anything else: open outside
-                        return try { Nav.open(ctx, u); true } catch (e: Exception) { true }
-                    }
-                }
-                loadUrl(profile.baseUrl)
-            }
-        },
-    )
 }
 
 // ================================================================== shared bits
@@ -342,7 +316,7 @@ private fun NearbyTab(profile: Profile) {
 }
 
 @Composable
-private fun SiteDialog(site: Site, profile: Profile, onDismiss: () -> Unit) {
+private fun SiteDialog(site: Site, profile: Profile, onAddStop: (() -> Unit)? = null, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
     val q = Pricing.quote(site, 0, profile)
     AlertDialog(
@@ -354,6 +328,9 @@ private fun SiteDialog(site: Site, profile: Profile, onDismiss: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(site.op + if (site.addr.isNotBlank()) " · ${site.addr}" else "", color = Muted, fontSize = 13.sp)
+                if (onAddStop != null) OutlinedButton(onClick = { onAddStop(); onDismiss() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Megálló ide az útvonalon")
+                }
                 if (q != null) {
                     PriceQ(site, q, big = true)
                     if (q.estimated) Text(
@@ -391,30 +368,59 @@ private fun SiteDialog(site: Site, profile: Profile, onDismiss: () -> Unit) {
     )
 }
 
-// ================================================================== route planner
+// ================================================================== map + route planner (one screen)
+private object RouteUi {
+    /** null = own location */
+    val origin = MutableStateFlow<Place?>(null)
+    val dest = MutableStateFlow<Place?>(null)
+    val fixed = MutableStateFlow<List<String>>(emptyList())
+    val excluded = MutableStateFlow<Set<String>>(emptySet())
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun RouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
+private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val plan by PlanStore.plan.collectAsState()
-    var query by rememberSaveable { mutableStateOf("") }
-    var results by remember { mutableStateOf<List<Place>>(emptyList()) }
+    val ver by DataRepo.version.collectAsState()
+    val tick by UiTick.tick.collectAsState()
+    val origin by RouteUi.origin.collectAsState()
+    val dest by RouteUi.dest.collectAsState()
+    val fixed by RouteUi.fixed.collectAsState()
+    val excluded by RouteUi.excluded.collectAsState()
+    val prof by rememberUpdatedState(profile)
+    var soc by remember { mutableFloatStateOf(plan?.startSoc?.toFloat() ?: profile.startSoc.toFloat()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var soc by remember { mutableFloatStateOf(profile.startSoc.toFloat()) }
-    var editing by remember { mutableStateOf(plan == null) }
+    var detail by remember { mutableStateOf<Site?>(null) }
+    var editing by remember { mutableStateOf<Int?>(null) }   // 0 = origin, 1 = destination
+    val holder = remember { MapHolder(ctx) { s -> detail = s } }
 
-    fun runPlan(dest: Place, forced: String? = null, optimize: String = profile.optimize) {
+    DisposableEffect(Unit) {
+        holder.view.onResume()
+        onDispose { holder.view.onPause() }
+    }
+    SideEffect { holder.profile = profile; holder.minKw = profile.minKw }
+    LaunchedEffect(ver, tick, profile) {
         val l = LocationHelper.last(ctx)
-        if (l == null) { error = "A saját helyed nem ismert – engedélyezd a helymeghatározást."; return }
+        holder.pins.me = l?.let { org.osmdroid.util.GeoPoint(it.latitude, it.longitude) }
+        if (plan == null && l != null && ver <= 2) holder.view.controller.setCenter(org.osmdroid.util.GeoPoint(l.latitude, l.longitude))
+        holder.refresh()
+    }
+    LaunchedEffect(plan) { holder.setPlan(plan) }
+
+    fun replan(optimize: String = prof.optimize) {
+        val d = RouteUi.dest.value ?: return
+        val o = RouteUi.origin.value ?: LocationHelper.last(ctx)?.let { Place("Saját hely", it.latitude, it.longitude) }
+        if (o == null) { error = "A saját helyed nem ismert – engedélyezd a helymeghatározást."; return }
         busy = true; error = null
         scope.launch {
             try {
                 PlanStore.plan.value = RoutePlanner.plan(
-                    Place("Saját hely", l.latitude, l.longitude), dest, profile, DataRepo.sites, soc.roundToInt(),
-                    forcedFirstId = forced, optimize = optimize,
+                    o, d, prof, DataRepo.sites, soc.roundToInt(),
+                    fixedStopIds = RouteUi.fixed.value, excludedIds = RouteUi.excluded.value, optimize = optimize,
                 )
-                editing = false
             } catch (e: Exception) {
                 error = "Útvonaltervezési hiba: ${e.message}"
             }
@@ -422,114 +428,241 @@ private fun RouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
         }
     }
 
-    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Header("Útvonal", "Töltés csak annyi, amennyi kell – ${profile.reservePct}% tartalékkal") }
-
-        // ---- battery + optimisation
-        item {
-            Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(16.dp)) {
-                Column(Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Akku most", modifier = Modifier.weight(1f))
-                        Text("${soc.roundToInt()} %", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+    val sheet = rememberBottomSheetScaffoldState(
+        bottomSheetState = rememberStandardBottomSheetState(initialValue = SheetValue.PartiallyExpanded, skipHiddenState = false)
+    )
+    BottomSheetScaffold(
+        scaffoldState = sheet,
+        sheetPeekHeight = if (plan != null) 300.dp else 132.dp,
+        sheetContainerColor = Card1,
+        containerColor = Bg,
+        sheetContent = {
+            LazyColumn(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                if (busy) item { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Tervezés…", color = Muted) } }
+                error?.let { e -> item { Text(e, color = Bad) } }
+                val p = plan
+                if (p == null) {
+                    item {
+                        Text(if (dest == null) "Hová mész? Add meg fent az úti célt." else "Tervezés…", fontWeight = FontWeight.SemiBold)
+                        Text(dataSummary() + " helyszín", color = Muted, fontSize = 12.sp)
                     }
-                    Slider(value = soc, onValueChange = { soc = it }, valueRange = 5f..100f)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Rangsor:", color = Muted, fontSize = 13.sp)
-                        FilterChip(selected = profile.optimize == "price", onClick = {
-                            onProfile(profile.copy(optimize = "price"))
-                            plan?.let { runPlan(it.dest, it.forcedFirstId, "price") }
-                        }, label = { Text("Legolcsóbb") })
-                        FilterChip(selected = profile.optimize == "time", onClick = {
-                            onProfile(profile.copy(optimize = "time"))
-                            plan?.let { runPlan(it.dest, it.forcedFirstId, "time") }
-                        }, label = { Text("Leggyorsabb") })
+                } else {
+                    item { PlanSummary(p) }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            NavAppButton("com.google.android.apps.maps", "Google Maps", Modifier.weight(1f)) {
+                                Nav.open(ctx, Nav.mapsRouteUri(p.dest, p.stops.map { it.cand.site }))
+                            }
+                            NavAppButton("com.waze", "Waze", Modifier.weight(1f)) {
+                                val first = p.stops.firstOrNull()?.cand?.site
+                                if (first != null) Nav.waze(ctx, first.lat, first.lon) else Nav.waze(ctx, p.dest.lat, p.dest.lon)
+                            }
+                        }
+                        if (p.stops.isNotEmpty()) Text("A Waze csak egy célt fogad: először az első töltőhöz navigál.", color = Muted, fontSize = 11.sp)
                     }
-                    Text(
-                        String.format(Locale.GERMANY, "Fogyasztás: %.1f kWh/100 km (ráhagyással) · akku %.0f kWh",
-                            profile.consumption(), profile.capacityKwh),
-                        color = Muted, fontSize = 12.sp,
-                    )
                 }
+                // battery + ranking
+                item {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Akku indulásnál", modifier = Modifier.weight(1f), color = Muted)
+                            Text("${soc.roundToInt()} %", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        }
+                        Slider(value = soc, onValueChange = { soc = it }, valueRange = 5f..100f, onValueChangeFinished = { replan() })
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FilterChip(selected = profile.optimize == "price", onClick = {
+                                onProfile(profile.copy(optimize = "price")); replan("price")
+                            }, label = { Text("Legolcsóbb") })
+                            FilterChip(selected = profile.optimize == "time", onClick = {
+                                onProfile(profile.copy(optimize = "time")); replan("time")
+                            }, label = { Text("Leggyorsabb") })
+                        }
+                    }
+                }
+                if (p != null) {
+                    if (p.stops.isNotEmpty() || fixed.isNotEmpty() || excluded.isNotEmpty()) item {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("MEGÁLLÓK", color = Muted, fontSize = 12.sp, letterSpacing = 1.sp, modifier = Modifier.weight(1f))
+                            if (fixed.isNotEmpty() || excluded.isNotEmpty()) TextButton(onClick = {
+                                RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet(); replan()
+                            }) { Text("Automatikus") }
+                        }
+                    }
+                    items(p.stops, key = { "s" + it.cand.site.id }) { st ->
+                        StopCard(st,
+                            onClick = { holder.view.controller.animateTo(org.osmdroid.util.GeoPoint(st.cand.site.lat, st.cand.site.lon), 13.0, 600L) },
+                            onRemove = {
+                                val id = st.cand.site.id
+                                RouteUi.fixed.value = RouteUi.fixed.value - id
+                                RouteUi.excluded.value = RouteUi.excluded.value + id
+                                replan()
+                            })
+                    }
+                    val stopIds = p.stops.map { it.cand.site.id }.toSet()
+                    val others = p.candidates.filter { it.quote != null && it.cand.site.id !in stopIds && it.cand.site.id !in excluded }
+                        .sortedWith(
+                            if (p.optimize == "time") compareByDescending<app.ladepilot.data.CandidateView> { it.quote!!.kw }.thenBy { it.cand.offKm }
+                            else compareBy<app.ladepilot.data.CandidateView> { it.quote!!.eur }
+                        )
+                    if (others.isNotEmpty()) item {
+                        Text("TOVÁBBI TÖLTŐK AZ ÚTON", color = Muted, fontSize = 12.sp, letterSpacing = 1.sp, modifier = Modifier.padding(top = 6.dp))
+                    }
+                    items(others.take(40), key = { "c" + it.cand.site.id }) { v ->
+                        val s = v.cand.site
+                        val q = v.quote!!
+                        Card(colors = CardDefaults.cardColors(containerColor = Bg), shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().clickable { detail = s }) {
+                            Row(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Box(Modifier.width(72.dp)) { PriceQ(s, q) }
+                                Column(Modifier.weight(1f)) {
+                                    Text(s.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("${v.cand.alongKm.roundToInt()}. km · ${q.kw} kW · ${s.op}", color = Muted, fontSize = 12.sp,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                TextButton(onClick = {
+                                    RouteUi.fixed.value = (RouteUi.fixed.value + s.id).distinct()
+                                    RouteUi.excluded.value = RouteUi.excluded.value - s.id
+                                    replan()
+                                }) { Text("+ Megálló") }
+                            }
+                        }
+                    }
+                }
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Térképen:", color = Muted, fontSize = 12.sp)
+                        listOf(0, 50, 150, 250).forEach { k ->
+                            FilterChip(selected = profile.minKw == k, onClick = { onProfile(profile.copy(minKw = k)) },
+                                label = { Text(if (k == 0) "Mind" else "$k+") })
+                        }
+                    }
+                }
+                item { Spacer(Modifier.height(24.dp)) }
+            }
+        },
+    ) { inner ->
+        Box(Modifier.fillMaxSize().padding(inner)) {
+            AndroidView(factory = { holder.view }, modifier = Modifier.fillMaxSize())
+
+            // ---- origin / destination card
+            Card(colors = CardDefaults.cardColors(containerColor = Card1.copy(alpha = 0.96f)), shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.padding(12.dp).fillMaxWidth()) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    EndpointRow(Color.White, origin?.name ?: "Saját hely", false) { editing = 0 }
+                    HorizontalDivider(Modifier.padding(start = 44.dp), color = Color(0x22FFFFFF))
+                    EndpointRow(Bad, dest?.name ?: "Hová mész?", dest == null) { editing = 1 }
+                }
+            }
+            // ---- my location
+            IconButton(
+                onClick = {
+                    LocationHelper.last(ctx)?.let { holder.view.controller.animateTo(org.osmdroid.util.GeoPoint(it.latitude, it.longitude), 13.0, 600L) }
+                },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp).size(52.dp)
+                    .background(Card1, CircleShape),
+            ) { Icon(Icons.Filled.LocationOn, "Saját hely") }
+
+            if (editing != null) EndpointSearch(
+                which = editing!!,
+                onClose = { editing = null },
+                onPick = { place ->
+                    if (editing == 0) RouteUi.origin.value = place else RouteUi.dest.value = place
+                    RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet()
+                    editing = null
+                    replan()
+                },
+            )
+        }
+    }
+    detail?.let { s ->
+        SiteDialog(s, profile, onAddStop = if (plan != null && plan!!.candidates.any { it.cand.site.id == s.id }) ({
+            RouteUi.fixed.value = (RouteUi.fixed.value + s.id).distinct()
+            RouteUi.excluded.value = RouteUi.excluded.value - s.id
+            replan()
+        }) else null) { detail = null }
+    }
+}
+
+@Composable
+private fun EndpointRow(dot: Color, text: String, placeholder: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(12.dp).background(dot, CircleShape))
+        Spacer(Modifier.width(16.dp))
+        Text(text, color = if (placeholder) Muted else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            fontWeight = if (placeholder) FontWeight.Normal else FontWeight.SemiBold)
+    }
+}
+
+/** Full-screen search for origin (0) or destination (1). null place = own location. */
+@Composable
+private fun EndpointSearch(which: Int, onClose: () -> Unit, onPick: (Place?) -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf<List<Place>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
+    fun search() {
+        if (query.isBlank()) return
+        busy = true; msg = null
+        scope.launch {
+            try {
+                results = RoutePlanner.geocode(query)
+                if (results.isEmpty()) msg = "Nincs találat"
+            } catch (e: Exception) { msg = "Keresési hiba: ${e.message}" }
+            busy = false
+        }
+    }
+    Column(Modifier.fillMaxSize().background(Bg).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (which == 0) "Indulás" else "Úti cél", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Bezár") }
+        }
+        OutlinedTextField(
+            value = query, onValueChange = { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+            label = { Text(if (which == 0) "Honnan?" else "Hová? pl. Békéscsaba") },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { search() }),
+        )
+        Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth().clickable {
+                if (which == 0) onPick(null) else {
+                    val l = LocationHelper.last(ctx)
+                    if (l != null) onPick(Place("Saját hely", l.latitude, l.longitude)) else msg = "A saját helyed nem ismert"
+                }
+            }) {
+            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.LocationOn, null, tint = Accent)
+                Text("  Saját hely használata", fontWeight = FontWeight.SemiBold)
             }
         }
-
-        // ---- destination search
-        if (editing || plan == null) {
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
-                        label = { Text("Úti cél, pl. Békéscsaba") }, modifier = Modifier.weight(1f))
-                    Spacer(Modifier.width(8.dp))
-                    Button(enabled = query.isNotBlank() && !busy, onClick = {
-                        busy = true; error = null
-                        scope.launch {
-                            try {
-                                results = RoutePlanner.geocode(query)
-                                if (results.isEmpty()) error = "Nincs találat"
-                            } catch (e: Exception) { error = "Keresési hiba: ${e.message}" }
-                            busy = false
-                        }
-                    }) { Text("Keresés") }
-                }
-            }
+        if (busy) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        msg?.let { Text(it, color = Muted) }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(results) { p ->
                 Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth().clickable { results = emptyList(); runPlan(p) }) {
+                    modifier = Modifier.fillMaxWidth().clickable { onPick(p) }) {
                     Text(p.name, modifier = Modifier.padding(14.dp))
                 }
             }
         }
-        if (busy) item { Row(verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Tervezés…", color = Muted) } }
-        error?.let { e -> item { Text(e, color = Bad) } }
+    }
+}
 
-        // ---- the plan
-        val p = plan
-        if (p != null && !editing) {
-            item { PlanSummary(p) }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { Nav.open(ctx, Nav.mapsRouteUri(p.dest, p.stops.map { it.cand.site })) },
-                        modifier = Modifier.weight(1f).height(52.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                    ) { Text(if (p.stops.isEmpty()) "Indítás Google Mapsszel" else "Indítás – ${p.stops.size} töltéssel") }
-                    OutlinedButton(onClick = { runPlan(p.dest, null) }, modifier = Modifier.height(52.dp)) { Text("Újra") }
-                }
-            }
-            item { TextButton(onClick = { editing = true }) { Text("Új úti cél") } }
-            if (p.stops.isNotEmpty()) item { Text("TERVEZETT TÖLTÉSEK", color = Muted, fontSize = 12.sp, letterSpacing = 1.sp) }
-            items(p.stops, key = { "s" + it.cand.site.id }) { st -> StopCard(st) }
-
-            val others = p.candidates.filter { it.quote != null && p.stops.none { s -> s.cand.site.id == it.cand.site.id } }
-                .sortedWith(
-                    if (p.optimize == "time") compareByDescending<app.ladepilot.data.CandidateView> { it.reachable }.thenByDescending { it.quote!!.kw }.thenBy { it.cand.offKm }
-                    else compareByDescending<app.ladepilot.data.CandidateView> { it.reachable }.thenBy { it.quote!!.eur }
-                )
-            if (others.isNotEmpty()) item {
-                Text("TOVÁBBI TÖLTŐK AZ ÚTON – koppints, ha ott szeretnél először megállni",
-                    color = Muted, fontSize = 12.sp, letterSpacing = 1.sp, modifier = Modifier.padding(top = 8.dp))
-            }
-            items(others.take(40), key = { "c" + it.cand.site.id }) { v ->
-                val s = v.cand.site
-                val q = v.quote!!
-                Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth().clickable(enabled = v.reachable) { runPlan(p.dest, s.id) }) {
-                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.width(76.dp)) { PriceQ(s, q) }
-                        Column(Modifier.weight(1f)) {
-                            Text(s.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                color = if (v.reachable) Color.Unspecified else Muted)
-                            Text("${v.cand.alongKm.roundToInt()}. km · ${Pricing.hhmm(v.etaMillis)} · " +
-                                (if (v.reachable) "érkezéskor ${v.arrivalSoc.roundToInt()}%" else "nem érhető el töltés nélkül"),
-                                color = Muted, fontSize = 12.sp)
-                        }
-                        KwBadge(q.kw)
-                    }
-                }
-            }
-            item { Spacer(Modifier.height(24.dp)) }
-        }
+@Composable
+private fun NavAppButton(pkg: String, label: String, modifier: Modifier, onClick: () -> Unit) {
+    val ctx = LocalContext.current
+    val icon = remember(pkg) {
+        try { ctx.packageManager.getApplicationIcon(pkg).toBitmap(96, 96).asImageBitmap() } catch (e: Exception) { null }
+    }
+    OutlinedButton(onClick = onClick, enabled = icon != null, modifier = modifier.height(52.dp)) {
+        if (icon != null) Image(icon, null, Modifier.size(24.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(if (icon != null) label else "$label (nincs telepítve)", maxLines = 1)
     }
 }
 
@@ -571,9 +704,10 @@ private fun Stat(label: String, value: String) {
 }
 
 @Composable
-private fun StopCard(st: app.ladepilot.data.ChargeStop) {
+private fun StopCard(st: app.ladepilot.data.ChargeStop, onClick: () -> Unit = {}, onRemove: (() -> Unit)? = null) {
     val s = st.cand.site
-    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2340)), shape = RoundedCornerShape(16.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1A2340)), shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth().clickable { onClick() }) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -581,6 +715,7 @@ private fun StopCard(st: app.ladepilot.data.ChargeStop) {
                     Text("${st.cand.alongKm.roundToInt()}. km · érkezés ${Pricing.hhmm(st.etaMillis)} · ${s.op}", color = Muted, fontSize = 12.sp)
                 }
                 PriceQ(s, st.quote)
+                if (onRemove != null) IconButton(onClick = onRemove) { Icon(Icons.Filled.Close, "Megálló törlése", tint = Muted) }
             }
             Text(
                 "${st.arrivalSoc.roundToInt()}% → ${st.targetSoc.roundToInt()}%  ·  ${st.kwhBattery.roundToInt()} kWh  ·  ${st.minutes.roundToInt()} perc  ·  ${Pricing.money(s, st.cost)}",

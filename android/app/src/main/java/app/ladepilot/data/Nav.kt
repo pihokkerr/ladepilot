@@ -30,6 +30,17 @@ object Nav {
         }
     }
 
+    /** Waze accepts only one destination. */
+    fun waze(ctx: Context, lat: Double, lon: Double) {
+        val uri = Uri.parse("https://waze.com/ul?ll=$lat,$lon&navigate=yes")
+        val i = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            ctx.startActivity(Intent(i).setPackage("com.waze"))
+        } catch (e: ActivityNotFoundException) {
+            ctx.startActivity(i)
+        }
+    }
+
     /** geo: URI for Android Auto navigation hand-off (one destination only). */
     fun geoUri(lat: Double, lon: Double, label: String): Uri =
         Uri.parse("geo:0,0?q=$lat,$lon(${Uri.encode(label)})")

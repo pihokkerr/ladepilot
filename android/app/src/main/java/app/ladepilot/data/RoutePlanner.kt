@@ -55,9 +55,14 @@ data class Plan(
     val feasible: Boolean,
     val note: String?,
     val candidates: List<CandidateView>,
-    val forcedFirstId: String?,
+    /** stops the user picked by hand (site ids) */
+    val fixedStopIds: List<String>,
+    /** chargers the user removed – never chosen automatically */
+    val excludedIds: Set<String>,
     /** "price" or "time" */
     val optimize: String,
+    /** route geometry for drawing: [lat, lon] */
+    val route: List<DoubleArray>,
 ) {
     val totalCost: Double get() = stops.sumOf { it.cost }
     val chargeMinutes: Double get() = stops.sumOf { it.minutes }
@@ -75,6 +80,24 @@ object RoutePlanner {
     private const val SAMPLE_KM = 1.0
 
     private class RP(val lat: Double, val lon: Double, val km: Double, val sec: Double)
+    @Volatile private var routeCache: Pair<String, Triple<Double, Double, List<DoubleArray>>>? = null
+
+    /** Keep roughly one point every ~150 m for drawing. */
+    private fun simplify(poly: List<DoubleArray>): List<DoubleArray> {
+        if (poly.size < 3) return poly
+        val out = ArrayList<DoubleArray>(); var last = poly.first(); out += last
+        for (p in poly) if (Geo.fastKm(last[0], last[1], p[0], p[1]) >= 0.15) { out += p; last = p }
+        if (out.last() !== poly.last()) out += poly.last()
+        return out
+    }
+
+    /** Reverse geocoding for "my location" labels. */
+    suspend fun reverse(lat: Double, lon: Double): String = withContext(Dispatchers.IO) {
+        try {
+            val o = JSONObject(Http.get("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&accept-language=hu&lat=$lat&lon=$lon"))
+            o.optString("display_name").split(",").map { it.trim() }.filter { it.isNotEmpty() }.take(2).joinToString(", ")
+        } catch (e: Exception) { "Saját hely" }
+    }
 
     suspend fun geocode(query: String): List<Place> = withContext(Dispatchers.IO) {
         val q = URLEncoder.encode(query, "UTF-8")
@@ -120,18 +143,22 @@ object RoutePlanner {
         profile: Profile,
         sites: List<Site>,
         startSoc: Int,
-        forcedFirstId: String? = null,
+        fixedStopIds: List<String> = emptyList(),
+        excludedIds: Set<String> = emptySet(),
         optimize: String = "price",
         startMillis: Long = System.currentTimeMillis(),
     ): Plan = withContext(Dispatchers.Default) {
-        // ---- 1. route
-        val url = "https://router.project-osrm.org/route/v1/driving/" +
-            "${origin.lon},${origin.lat};${dest.lon},${dest.lat}?overview=full&geometries=polyline6"
-        val body = withContext(Dispatchers.IO) { Http.get(url) }
-        val route = JSONObject(body).getJSONArray("routes").getJSONObject(0)
-        val totalKm = route.getDouble("distance") / 1000.0
-        val totalSec = route.getDouble("duration")
-        val poly = Geo.decodePolyline(route.getString("geometry"), 6)
+        // ---- 1. route (cached: changing stops or battery does not need a new route)
+        val key = "${origin.lat},${origin.lon};${dest.lat},${dest.lon}"
+        val cached = routeCache?.takeIf { it.first == key }?.second
+        val (totalKm, totalSec, poly) = cached ?: run {
+            val url = "https://router.project-osrm.org/route/v1/driving/" +
+                "${origin.lon},${origin.lat};${dest.lon},${dest.lat}?overview=full&geometries=polyline6"
+            val body = withContext(Dispatchers.IO) { Http.get(url) }
+            val route = JSONObject(body).getJSONArray("routes").getJSONObject(0)
+            Triple(route.getDouble("distance") / 1000.0, route.getDouble("duration"),
+                Geo.decodePolyline(route.getString("geometry"), 6)).also { routeCache = key to it }
+        }
 
         // ---- 2. resample to ~1 km steps with cumulative distance
         val pts = ArrayList<RP>()
@@ -185,16 +212,39 @@ object RoutePlanner {
         var delaySec = 0.0
         var feasible = true
         var note: String? = null
+        // ---- 5a. stops picked by hand, in route order; charge just enough for the next leg
+        val fixed = fixedStopIds.mapNotNull { id -> cands.firstOrNull { it.site.id == id } }.sortedBy { it.alongKm }
+        for ((i, c) in fixed.withIndex()) {
+            val eta = startMillis + ((c.routeSec + delaySec) * 1000).toLong()
+            val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta)
+                ?: Quote(0.0, 0.0, 0.0, null, null, c.site.maxKw)
+            val arrival = soc - (c.alongKm - pos + c.offKm * 1.3) * socPerKm
+            if (arrival < reserve) {
+                note = "${c.site.name} csak ${arrival.toInt()}%-kal érhető el."
+                if (arrival < 0) feasible = false
+            }
+            val nextKm = if (i < fixed.lastIndex) fixed[i + 1].alongKm else totalKm
+            val need = reserve + (nextKm - c.alongKm + c.offKm * 1.3) * socPerKm + 2.0
+            val target = ceil(min(max(need, arrival), maxSoc)).coerceAtLeast(arrival)
+            val kwhBat = (target - arrival) / 100.0 * cap
+            val mins = chargeMinutes(arrival, target, q.kw, cap)
+            val cost = kwhBat * loss * q.energyEur + (q.eurMin ?: 0.0) * mins +
+                (if (kwhBat > 0) (c.site.startFeeLocal ?: 0.0) / c.site.fx else 0.0)
+            val st = ChargeStop(c, eta, arrival, target, kwhBat, kwhBat * loss, mins, q, cost)
+            stops += st
+            delaySec += mins * 60 + detourSec(c)
+            pos = c.alongKm
+            soc = target - c.offKm * 1.3 * socPerKm
+        }
+
+        // ---- 5b. automatic stops for whatever is still missing
         var guard = 0
         while (guard++ < 6) {
             val socAtDest = soc - (totalKm - pos) * socPerKm
             if (socAtDest >= reserve) break
             val reachKm = pos + (soc - reserve) / socPerKm
-            var options = cands.filter { it.alongKm > pos + 3 && it.alongKm + it.offKm * 1.3 <= reachKm }
-            if (stops.isEmpty() && forcedFirstId != null) {
-                val forced = options.firstOrNull { it.site.id == forcedFirstId }
-                if (forced != null) options = listOf(forced)
-                else note = "A kiválasztott töltő a tartalékkal nem érhető el – másikat választottam."
+            val options = cands.filter {
+                it.alongKm > pos + 3 && it.alongKm + it.offKm * 1.3 <= reachKm && it.site.id !in excludedIds
             }
             if (options.isEmpty()) {
                 feasible = false
@@ -205,12 +255,11 @@ object RoutePlanner {
                 val eta = startMillis + ((c.routeSec + delaySec) * 1000).toLong()
                 val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta) ?: return@mapNotNull null
                 val arrival = soc - (c.alongKm - pos + c.offKm * 1.3) * socPerKm
-                val forced = stops.isEmpty() && c.site.id == forcedFirstId
                 // only stop where charging is actually needed (no "top up 1 %" stops)
-                if (strict && !forced && arrival > 60.0) return@mapNotNull null
+                if (strict && arrival > 60.0) return@mapNotNull null
                 val need = reserve + (totalKm - c.alongKm + c.offKm * 1.3) * socPerKm + 2.0
                 val target = ceil(min(max(need, arrival + 10), maxSoc))
-                if (strict && !forced && target - arrival < 10) return@mapNotNull null
+                if (strict && target - arrival < 10) return@mapNotNull null
                 val kwhBat = (target - arrival) / 100.0 * cap
                 val billed = kwhBat * loss
                 val mins = chargeMinutes(arrival, target, q.kw, cap)
@@ -249,7 +298,8 @@ object RoutePlanner {
         val arrivalSoc = soc - (totalKm - pos) * socPerKm
         Plan(
             origin, dest, totalKm, totalSec, startSoc, startMillis, stops, arrivalSoc,
-            startMillis + ((totalSec + delaySec) * 1000).toLong(), feasible, note, views, forcedFirstId, optimize,
+            startMillis + ((totalSec + delaySec) * 1000).toLong(), feasible, note, views,
+            fixedStopIds, excludedIds, optimize, simplify(poly),
         )
     }
 }
