@@ -165,6 +165,26 @@ def build_at(table, status):
     # 1) live status + price per refill point id
     live = {}
     site_status = find_key(status, "energyInfrastructureSiteStatus") or []
+    # --- diagnostics: which rate line types exist, and what do zero-priced points look like
+    import collections
+    types = collections.Counter()
+    zero_samples = []
+    for ss in site_status:
+        for st in as_list(ss.get("energyInfrastructureStationStatus")):
+            for rp in as_list(st.get("refillPointStatus")):
+                nr = rp.get("newRates") or {}
+                pol = tuple(sorted(str((x or {}).get("value")) for x in as_list((nr.get("energyPricingPolicy") or {}).get("pricingPolicy"))))
+                lines = [(str(((l.get("rateLineType") or {}).get("value"))), l.get("value"), l.get("incrementPeriod"))
+                         for c in as_list(nr.get("rateLineCollection")) for l in as_list(c.get("rateLine"))]
+                for t, v, inc in lines:
+                    types[(t, "zero" if v == 0 else "pos", inc)] += 1
+                types[("POLICY",) + pol] += 1
+                if any(t == "PER_UNIT" and v == 0 for t, v, _ in lines) and len(zero_samples) < 6:
+                    zero_samples.append(json.dumps(nr, ensure_ascii=False)[:700])
+    for k, v in types.most_common(40):
+        print("  rate", k, v, file=sys.stderr)
+    for z in zero_samples:
+        print("  zero-sample", z, file=sys.stderr)
     for ss in site_status:
         for st in as_list(ss.get("energyInfrastructureStationStatus")):
             for rp in as_list(st.get("refillPointStatus")):
