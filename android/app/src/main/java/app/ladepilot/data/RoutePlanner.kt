@@ -63,6 +63,8 @@ data class Plan(
     val chargeMinutes: Double get() = stops.sumOf { it.minutes }
 }
 
+internal class StopOption(val stop: ChargeStop, val lostMin: Double, val extraStop: Boolean)
+
 /** The current plan, shared between phone and Android Auto. */
 object PlanStore {
     val plan = MutableStateFlow<Plan?>(null)
@@ -199,33 +201,41 @@ object RoutePlanner {
                 note = "A tartalék megtartásával nincs elérhető ${profile.routeMinKw}+ kW-os töltő az útvonalon. Tölts többet indulás előtt, vagy csökkentsd a minimális teljesítményt a profilban."
                 break
             }
-            var bestStop: ChargeStop? = null
-            var bestScore = Double.MAX_VALUE
-            for (c in options) {
+            fun evaluate(strict: Boolean): List<StopOption> = options.mapNotNull { c ->
                 val eta = startMillis + ((c.routeSec + delaySec) * 1000).toLong()
-                val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta) ?: continue
+                val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta) ?: return@mapNotNull null
                 val arrival = soc - (c.alongKm - pos + c.offKm * 1.3) * socPerKm
+                val forced = stops.isEmpty() && c.site.id == forcedFirstId
+                // only stop where charging is actually needed (no "top up 1 %" stops)
+                if (strict && !forced && arrival > 60.0) return@mapNotNull null
                 val need = reserve + (totalKm - c.alongKm + c.offKm * 1.3) * socPerKm + 2.0
-                val target = ceil(min(max(need, arrival + 5), maxSoc))
+                val target = ceil(min(max(need, arrival + 10), maxSoc))
+                if (strict && !forced && target - arrival < 10) return@mapNotNull null
                 val kwhBat = (target - arrival) / 100.0 * cap
                 val billed = kwhBat * loss
                 val mins = chargeMinutes(arrival, target, q.kw, cap)
                 val cost = billed * q.energyEur + (q.eurMin ?: 0.0) * mins +
                     ((c.site.startFeeLocal ?: 0.0) / c.site.fx)
-                // prefer cheap energy; penalise stops that will not get us to the destination,
-                // detours and (lightly) long charging times
-                val extraStop = need > maxSoc
-                val score = if (optimize == "time") {
-                    // minutes lost: charging + detour (+ a full extra stop if this one is not enough)
-                    mins + detourSec(c) / 60 + (if (extraStop) 25.0 else 0.0) + q.eur * 2
-                } else {
-                    q.eur + (if (extraStop) 0.08 else 0.0) + c.offKm * 0.004 + mins * 0.0008
+                StopOption(
+                    ChargeStop(c, eta, arrival, target, kwhBat, billed, mins, q, cost),
+                    lostMin = mins + detourSec(c) / 60, extraStop = need > maxSoc,
+                )
+            }
+            var evals = evaluate(strict = true)
+            if (evals.isEmpty()) evals = evaluate(strict = false)
+            val chosen = when {
+                evals.isEmpty() -> null
+                optimize == "time" -> {
+                    // fastest overall, but among options within 5 minutes of it take the cheapest
+                    fun lost(o: StopOption) = o.lostMin + if (o.extraStop) 25.0 else 0.0
+                    val fastest = evals.minOf { lost(it) }
+                    evals.filter { lost(it) <= fastest + 5.0 }.minByOrNull { it.stop.quote.eur }
                 }
-                if (score < bestScore) {
-                    bestScore = score
-                    bestStop = ChargeStop(c, eta, arrival, target, kwhBat, billed, mins, q, cost)
+                else -> evals.minByOrNull {
+                    it.stop.quote.eur + (if (it.extraStop) 0.08 else 0.0) + it.stop.cand.offKm * 0.004 + it.stop.minutes * 0.0008
                 }
             }
+            val bestStop = chosen?.stop
             val st = bestStop ?: run {
                 feasible = false
                 note = "Az elérhető töltőkhöz nincs árinformáció."
