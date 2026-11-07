@@ -248,7 +248,7 @@ internal class MapHolder(private val ctx: Context, private val onTap: (Site) -> 
         if (style == null) return
         val prof = profile ?: return
         val bb = m.projection.visibleRegion.latLngBounds
-        val north = bb.latNorth; val south = bb.latSouth; val east = bb.lonEast; val west = bb.lonWest
+        val north = bb.latitudeNorth; val south = bb.latitudeSouth; val east = bb.longitudeEast; val west = bb.longitudeWest
         val stopIds = plan?.stops?.map { it.cand.site.id }?.toSet() ?: emptySet()
         val kw = minKw
         val ref = me ?: m.cameraPosition.target ?: LatLng(48.2, 16.37)
