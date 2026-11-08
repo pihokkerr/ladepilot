@@ -875,6 +875,8 @@ private fun PlanSummary(p: Plan) {
             Text("${p.distanceKm.roundToInt()} km · vezetés ${fmtDuration(driving)} (kitérőkkel)", color = Muted, fontSize = 13.sp)
             Text("Teljes menetidő töltéssel: ${fmtDuration(total)} · érkezés ${Pricing.hhmm(p.arrivalMillis)}",
                 fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            if (p.avgKwh100 > 0) Text(String.format(Locale.GERMANY, "Becsült átlagfogyasztás ezen az úton: %.1f kWh/100 km", p.avgKwh100),
+                color = Muted, fontSize = 12.sp)
             Spacer(Modifier.height(6.dp))
             when {
                 !p.feasible -> Text(p.note ?: "Nem tervezhető", color = Bad)

@@ -11,7 +11,8 @@ Saját töltőár-térkép Teslához: minden szolgáltató töltője Ausztriába
   (minden `android/` módosítás után automatikusan újrafordul, ugyanerre a linkre).
 - Android Autóban: fejlesztői beállítások → *Unknown sources* bekapcsolva.
 - Telefonon: Közeli / Útvonal (töltéstervező akkuszázalékkal, Legolcsóbb/Leggyorsabb rangsor) / Profil (akku, fogyasztás, tarifák).
-- Útvonal: OSRM (router.project-osrm.org), címkeresés: Nominatim (OpenStreetMap).
+- Útvonal: OSRM (router.project-osrm.org), címkeresés: Nominatim (OpenStreetMap), térkép: OpenFreeMap (MapLibre).
+- Járműadatok: Open EV Data (https://github.com/KilowattApp/open-ev-data), MIT licenc.
 
 ## Felépítés
 
