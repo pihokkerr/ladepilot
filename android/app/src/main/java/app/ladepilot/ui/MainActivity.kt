@@ -139,6 +139,9 @@ private val Scheme = darkColorScheme(
 
 private object UiTick { val tick = MutableStateFlow(0) }
 
+/** Text shared to the app (e.g. a Google Maps place link) waiting to become the destination. */
+private object ShareIn { val text = MutableStateFlow<String?>(null) }
+
 private fun powerColor(kw: Int) = when {
     kw >= 250 -> Color(0xFFFF3B30)
     kw >= 150 -> Warn
@@ -157,7 +160,20 @@ class MainActivity : ComponentActivity() {
             perm.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         }
         DataRepo.ensureLoaded(this)
+        handleShare(intent)
         setContent { MaterialTheme(colorScheme = Scheme) { App() } }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleShare(intent)
+    }
+
+    private fun handleShare(i: Intent?) {
+        if (i?.action == Intent.ACTION_SEND) {
+            val t = i.getStringExtra(Intent.EXTRA_TEXT) ?: return
+            ShareIn.text.value = t
+        }
     }
 
     override fun onResume() {
@@ -172,6 +188,8 @@ private fun App() {
     val ctx = LocalContext.current
     var tab by rememberSaveable { mutableIntStateOf(3) }
     var profile by remember { mutableStateOf(ProfileStore.load(ctx)) }
+    val shared by ShareIn.text.collectAsState()
+    LaunchedEffect(shared) { if (shared != null) tab = 3 }
     val onProfile: (Profile) -> Unit = { p -> profile = p; ProfileStore.save(ctx, p) }
     Scaffold(
         containerColor = Bg,
@@ -386,6 +404,25 @@ private object RouteUi {
     val excluded = MutableStateFlow<Set<String>>(emptySet())
     /** intermediate destinations, in the order the user arranged them */
     val vias = MutableStateFlow<List<Place>>(emptyList())
+
+    /** "my location" placeholder that can sit anywhere in the list (resolved when planning) */
+    val OWN = Place("Saját hely", Double.NaN, Double.NaN)
+    fun isOwn(p: Place?) = p == null || p.lat.isNaN()
+
+    /** start, vias, destination as one list (destination only if set) */
+    fun points(): List<Place> = listOf(origin.value ?: OWN) + vias.value + listOfNotNull(dest.value)
+
+    fun setPoints(list: List<Place>) {
+        if (list.isEmpty()) return
+        origin.value = list.first().takeUnless { isOwn(it) }
+        if (list.size >= 2) {
+            dest.value = list.last()
+            vias.value = list.subList(1, list.size - 1)
+        } else {
+            dest.value = null; vias.value = emptyList()
+        }
+        fixed.value = emptyList(); excluded.value = emptySet()
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -422,24 +459,44 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
         holder.refresh()
     }
     LaunchedEffect(plan) { holder.setPlan(plan) }
+    val shared by ShareIn.text.collectAsState()
+
+    fun resolve(p: Place?): Place? =
+        if (RouteUi.isOwn(p)) LocationHelper.last(ctx)?.let { Place("Saját hely", it.latitude, it.longitude) } else p
 
     fun replan(optimize: String = prof.optimize) {
-        val d = RouteUi.dest.value ?: return
-        val o = RouteUi.origin.value ?: LocationHelper.last(ctx)?.let { Place("Saját hely", it.latitude, it.longitude) }
-        if (o == null) { error = "A saját helyed nem ismert – engedélyezd a helymeghatározást."; return }
+        if (RouteUi.dest.value == null) return
+        val d = resolve(RouteUi.dest.value)
+        val o = resolve(RouteUi.origin.value)
+        val vs = RouteUi.vias.value.map { resolve(it) }
+        if (o == null || d == null || vs.any { it == null }) { error = "A saját helyed nem ismert – engedélyezd a helymeghatározást."; return }
         busy = true; error = null
         scope.launch {
             try {
                 PlanStore.plan.value = RoutePlanner.plan(
                     o, d, prof, DataRepo.sites, soc.roundToInt(),
                     fixedStopIds = RouteUi.fixed.value, excludedIds = RouteUi.excluded.value, optimize = optimize,
-                    vias = RouteUi.vias.value,
+                    vias = vs.filterNotNull(),
                 )
             } catch (e: Exception) {
                 error = "Útvonaltervezési hiba: ${e.message}"
             }
             busy = false
         }
+    }
+
+    LaunchedEffect(shared) {
+        val t = shared ?: return@LaunchedEffect
+        ShareIn.text.value = null
+        busy = true; error = null
+        val near = LocationHelper.last(ctx)?.let { Place("", it.latitude, it.longitude) }
+        val found = try { RoutePlanner.geocode(t, near) } catch (e: Exception) { emptyList() }
+        busy = false
+        val p = found.firstOrNull()
+        if (p == null) { error = "A megosztott helyet nem találtam: ${t.take(80)}"; return@LaunchedEffect }
+        val pts = RouteUi.points()
+        RouteUi.setPoints(if (RouteUi.dest.value == null) pts + p else pts.dropLast(1) + p)
+        replan()
     }
 
     val sheet = rememberBottomSheetScaffoldState(
@@ -588,36 +645,41 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                 Card(colors = CardDefaults.cardColors(containerColor = Card1.copy(alpha = 0.96f)), shape = RoundedCornerShape(18.dp),
                     modifier = Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(vertical = 4.dp)) {
-                        EndpointRow(Color.White, origin?.name ?: "Saját hely", false,
-                            onClear = if (origin != null) ({ RouteUi.origin.value = null; RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet(); replan() }) else null,
-                        ) { editing = 0 }
-                        HorizontalDivider(Modifier.padding(start = 44.dp), color = Color(0x22FFFFFF))
-                        ViaRows(
-                            vias = vias,
-                            onEdit = { i -> editing = 10 + i },
-                            onRemove = { i ->
-                                RouteUi.vias.value = RouteUi.vias.value.filterIndexed { j, _ -> j != i }
-                                RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet(); replan()
-                            },
-                            onDragEnd = { RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet(); replan() },
-                        )
-                        EndpointRow(Bad, dest?.name ?: "Hová mész?", dest == null,
-                            onClear = if (dest != null) ({
-                                RouteUi.dest.value = null; RouteUi.vias.value = emptyList()
-                                RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet()
-                                PlanStore.plan.value = null
-                                LocationHelper.last(ctx)?.let { holder.flyTo(it.latitude, it.longitude, 12.0) }
-                            }) else null,
-                        ) { editing = 1 }
+                        if (dest == null) {
+                            EndpointRow(Color.White, origin?.name ?: "Saját hely", false,
+                                onClear = if (origin != null) ({ RouteUi.origin.value = null }) else null,
+                            ) { editing = 100 }
+                            HorizontalDivider(Modifier.padding(start = 44.dp), color = Color(0x22FFFFFF))
+                            EndpointRow(Bad, "Hová mész?", true) { editing = 1 }
+                        } else {
+                            PointRows(
+                                points = listOf(origin ?: RouteUi.OWN) + vias + listOf(dest!!),
+                                onEdit = { i -> editing = 100 + i },
+                                onRemove = { i ->
+                                    val pts = RouteUi.points()
+                                    when {
+                                        i == 0 -> RouteUi.setPoints(listOf(RouteUi.OWN) + pts.drop(1))
+                                        pts.size <= 2 -> {   // removing the destination of a simple route
+                                            RouteUi.setPoints(pts.take(1)); PlanStore.plan.value = null
+                                            LocationHelper.last(ctx)?.let { holder.flyTo(it.latitude, it.longitude, 12.0) }
+                                        }
+                                        else -> RouteUi.setPoints(pts.filterIndexed { j, _ -> j != i })
+                                    }
+                                    replan()
+                                },
+                                onSwap = { RouteUi.setPoints(RouteUi.points().reversed()); replan() },
+                                onDragEnd = { RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet(); replan() },
+                            )
+                        }
                         if (dest != null) Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                             TextButton(onClick = { editing = 2 }) {
                                 Icon(Icons.Filled.Add, null, Modifier.size(18.dp)); Text(" Köztes cél")
                             }
                             Spacer(Modifier.weight(1f))
                             if (vias.size >= 2) TextButton(onClick = {
-                                val o = RouteUi.origin.value ?: LocationHelper.last(ctx)?.let { Place("Saját hely", it.latitude, it.longitude) }
-                                val d = RouteUi.dest.value
-                                if (o != null && d != null) {
+                                val o = resolve(RouteUi.origin.value)
+                                val d = resolve(RouteUi.dest.value)
+                                if (o != null && d != null && RouteUi.vias.value.none { RouteUi.isOwn(it) }) {
                                     busy = true
                                     scope.launch {
                                         try {
@@ -658,13 +720,15 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                 onClose = { editing = null },
                 onPick = { place ->
                     val e = editing ?: 0
+                    val pt = place ?: RouteUi.OWN
                     when {
-                        e == 0 -> RouteUi.origin.value = place
-                        e == 1 -> RouteUi.dest.value = place
-                        e == 2 -> if (place != null) RouteUi.vias.value = RouteUi.vias.value + place
-                        e >= 10 -> if (place != null) RouteUi.vias.value = RouteUi.vias.value.mapIndexed { i, v -> if (i == e - 10) place else v }
+                        e == 1 -> RouteUi.setPoints(RouteUi.points() + pt)                       // set destination
+                        e == 2 -> RouteUi.points().let { p -> RouteUi.setPoints(p.dropLast(1) + pt + p.last()) }   // add via
+                        e >= 100 -> RouteUi.points().let { p ->
+                            val i = e - 100
+                            if (i < p.size) RouteUi.setPoints(p.mapIndexed { j, v -> if (j == i) pt else v })
+                        }
                     }
-                    RouteUi.fixed.value = emptyList(); RouteUi.excluded.value = emptySet()
                     editing = null
                     replan()
                 },
@@ -694,51 +758,66 @@ private fun MapChip(selected: Boolean, label: String, onClick: () -> Unit) {
     }
 }
 
-/** Intermediate destinations; drag the handle to reorder. */
+/** Start, intermediate destinations and destination; every row can be dragged by its handle. */
 @Composable
-private fun ViaRows(vias: List<Place>, onEdit: (Int) -> Unit, onRemove: (Int) -> Unit, onDragEnd: () -> Unit) {
+private fun PointRows(points: List<Place>, onEdit: (Int) -> Unit, onRemove: (Int) -> Unit, onSwap: () -> Unit, onDragEnd: () -> Unit) {
     val rowH = with(LocalDensity.current) { 48.dp.toPx() }
     var dragged by remember { mutableStateOf<Place?>(null) }
     var offset by remember { mutableFloatStateOf(0f) }
-    vias.forEachIndexed { i, v ->
-        key(v.name, v.lat, v.lon) {
-            val isDragged = dragged == v
-            Row(
-                Modifier.fillMaxWidth().height(48.dp)
-                    .zIndex(if (isDragged) 1f else 0f)
-                    .graphicsLayer { translationY = if (isDragged) offset else 0f }
-                    .background(if (isDragged) Color(0xFF26282E) else Color.Transparent)
-                    .clickable { onEdit(i) },
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Filled.Menu, "Áthelyezés", tint = Muted,
-                    modifier = Modifier.size(44.dp).padding(start = 10.dp, end = 10.dp, top = 12.dp, bottom = 12.dp)
-                        .pointerInput(v) {
-                            detectDragGestures(
-                                onDragStart = { dragged = v; offset = 0f },
-                                onDragEnd = { dragged = null; offset = 0f; onDragEnd() },
-                                onDragCancel = { dragged = null; offset = 0f },
-                                onDrag = { change, amount ->
-                                    change.consume()
-                                    offset += amount.y
-                                    val list = RouteUi.vias.value
-                                    val cur = list.indexOf(v)
-                                    if (offset > rowH / 2 && cur in 0 until list.lastIndex) {
-                                        RouteUi.vias.value = list.toMutableList().apply { add(cur + 1, removeAt(cur)) }
-                                        offset -= rowH
-                                    } else if (offset < -rowH / 2 && cur > 0) {
-                                        RouteUi.vias.value = list.toMutableList().apply { add(cur - 1, removeAt(cur)) }
-                                        offset += rowH
-                                    }
-                                },
-                            )
-                        })
-                Box(Modifier.size(10.dp).background(Color(0xFFFFD60A), CircleShape))
-                Spacer(Modifier.width(12.dp))
-                Text(v.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                IconButton(onClick = { onRemove(i) }, modifier = Modifier.size(40.dp)) { Icon(Icons.Filled.Close, "Törlés", tint = Muted) }
+    Box {
+        Column {
+            points.forEachIndexed { i, v ->
+                key(v.name, v.lat, v.lon) {
+                    val isDragged = dragged == v
+                    val dot = when (i) { 0 -> Color.White; points.lastIndex -> Bad; else -> Color(0xFFFFD60A) }
+                    Row(
+                        Modifier.fillMaxWidth().height(48.dp)
+                            .zIndex(if (isDragged) 1f else 0f)
+                            .graphicsLayer { translationY = if (isDragged) offset else 0f }
+                            .background(if (isDragged) Color(0xFF26282E) else Color.Transparent)
+                            .clickable { onEdit(i) },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Filled.Menu, "Áthelyezés", tint = Muted,
+                            modifier = Modifier.size(44.dp).padding(start = 10.dp, end = 10.dp, top = 12.dp, bottom = 12.dp)
+                                .pointerInput(v) {
+                                    detectDragGestures(
+                                        onDragStart = { dragged = v; offset = 0f },
+                                        onDragEnd = { dragged = null; offset = 0f; onDragEnd() },
+                                        onDragCancel = { dragged = null; offset = 0f },
+                                        onDrag = { change, amount ->
+                                            change.consume()
+                                            offset += amount.y
+                                            val list = RouteUi.points()
+                                            val cur = list.indexOf(dragged ?: return@detectDragGestures)
+                                            if (cur < 0) return@detectDragGestures
+                                            val target = when {
+                                                offset > rowH / 2 && cur < list.lastIndex -> cur + 1
+                                                offset < -rowH / 2 && cur > 0 -> cur - 1
+                                                else -> null
+                                            }
+                                            if (target != null) {
+                                                val l = list.toMutableList()
+                                                l.add(target, l.removeAt(cur))
+                                                RouteUi.setPoints(l)
+                                                offset += if (target > cur) -rowH else rowH
+                                            }
+                                        },
+                                    )
+                                })
+                        Box(Modifier.size(10.dp).background(dot, CircleShape))
+                        Spacer(Modifier.width(12.dp))
+                        Text(v.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                        if (i == 0 && points.size == 2) IconButton(onClick = onSwap, modifier = Modifier.size(40.dp)) {
+                            Text("⇅", fontSize = 20.sp, color = Muted)
+                        }
+                        if (!(i == 0 && RouteUi.isOwn(v))) IconButton(onClick = { onRemove(i) }, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Filled.Close, "Törlés", tint = Muted)
+                        } else Spacer(Modifier.size(40.dp))
+                    }
+                    if (i < points.lastIndex) HorizontalDivider(Modifier.padding(start = 44.dp), color = Color(0x22FFFFFF))
+                }
             }
-            HorizontalDivider(Modifier.padding(start = 44.dp), color = Color(0x22FFFFFF))
         }
     }
 }
@@ -800,12 +879,20 @@ private fun EndpointSearch(which: Int, onClose: () -> Unit, onPick: (Place?) -> 
     var results by remember { mutableStateOf<List<Place>>(emptyList()) }
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
+    val near = remember { LocationHelper.last(ctx)?.let { Place("", it.latitude, it.longitude) } }
+    // suggestions while typing (debounced)
+    LaunchedEffect(query) {
+        if (query.trim().length < 3) return@LaunchedEffect
+        kotlinx.coroutines.delay(350)
+        val r = RoutePlanner.suggest(query, near)
+        if (r.isNotEmpty()) { results = r; msg = null }
+    }
     fun search() {
         if (query.isBlank()) return
         busy = true; msg = null
         scope.launch {
             try {
-                results = RoutePlanner.geocode(query)
+                results = RoutePlanner.geocode(query, near)
                 if (results.isEmpty()) msg = "Nincs találat"
             } catch (e: Exception) { msg = "Keresési hiba: ${e.message}" }
             busy = false
@@ -813,21 +900,18 @@ private fun EndpointSearch(which: Int, onClose: () -> Unit, onPick: (Place?) -> 
     }
     Column(Modifier.fillMaxSize().background(Bg).padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(when { which == 0 -> "Indulás"; which == 1 -> "Úti cél"; else -> "Köztes cél" }, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(when { which == 100 -> "Indulás"; which == 1 -> "Úti cél"; which == 2 -> "Köztes cél"; else -> "Pont módosítása" }, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
             IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Bezár") }
         }
         OutlinedTextField(
             value = query, onValueChange = { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            label = { Text(if (which == 0) "Honnan?" else "Hová? pl. Szeged") },
+            label = { Text("Cím, hely, cégnév, koordináta vagy Google Maps-link") },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { search() }),
         )
         Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(14.dp),
             modifier = Modifier.fillMaxWidth().clickable {
-                if (which == 0) onPick(null) else {
-                    val l = LocationHelper.last(ctx)
-                    if (l != null) onPick(Place("Saját hely", l.latitude, l.longitude)) else msg = "A saját helyed nem ismert"
-                }
+                onPick(null)
             }) {
             Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.LocationOn, null, tint = Accent)

@@ -126,16 +126,106 @@ object RoutePlanner {
         } catch (e: Exception) { "Saját hely" }
     }
 
-    suspend fun geocode(query: String): List<Place> = withContext(Dispatchers.IO) {
-        val q = URLEncoder.encode(query, "UTF-8")
-        val body = Http.get("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&accept-language=hu&q=$q")
+    private val COORDS = Regex("""(-?\d{1,2}\.\d+)\s*[,;\s]\s*(-?\d{1,3}\.\d+)""")
+    private val AT_COORDS = Regex("""@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)""")
+    private val Q_COORDS = Regex("""[?&](?:q|query|ll|destination|daddr)=(-?\d{1,2}\.\d+)(?:,|%2C)(-?\d{1,3}\.\d+)""")
+    private val DATA_COORDS = Regex("""!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)""")
+    private val URL = Regex("""https?://\S+""")
+
+    /** Coordinates written as text or inside a Google Maps link. */
+    private fun coordsIn(text: String): Pair<Double, Double>? {
+        for (re in listOf(DATA_COORDS, Q_COORDS, AT_COORDS, COORDS)) {
+            val m = re.find(text) ?: continue
+            val lat = m.groupValues[1].toDoubleOrNull() ?: continue
+            val lon = m.groupValues[2].toDoubleOrNull() ?: continue
+            if (lat in -90.0..90.0 && lon in -180.0..180.0) return lat to lon
+        }
+        return null
+    }
+
+    /** Follows short links like maps.app.goo.gl to the final URL. */
+    private fun expandUrl(url: String): String {
+        var u = url
+        repeat(5) {
+            val c = java.net.URL(u).openConnection() as java.net.HttpURLConnection
+            c.instanceFollowRedirects = false
+            c.connectTimeout = 10_000; c.readTimeout = 10_000
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Android) Ladepilot")
+            val loc = c.getHeaderField("Location")
+            c.disconnect()
+            if (loc.isNullOrBlank()) return u
+            u = if (loc.startsWith("http")) loc else java.net.URL(java.net.URL(u), loc).toString()
+        }
+        return u
+    }
+
+    private fun photon(q: String, near: Place?): List<Place> {
+        val bias = near?.let { "&lat=${it.lat}&lon=${it.lon}" } ?: ""
+        val body = Http.get("https://photon.komoot.io/api/?limit=8&q=${URLEncoder.encode(q, "UTF-8")}$bias")
+        val feats = JSONObject(body).optJSONArray("features") ?: return emptyList()
+        return (0 until feats.length()).mapNotNull { i ->
+            val f = feats.getJSONObject(i)
+            val c = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: return@mapNotNull null
+            val pr = f.optJSONObject("properties") ?: JSONObject()
+            val street = listOf(pr.optString("street"), pr.optString("housenumber")).filter { it.isNotBlank() }.joinToString(" ")
+            val town = listOf(pr.optString("postcode"), pr.optString("city").ifBlank { pr.optString("county") }).filter { it.isNotBlank() }.joinToString(" ")
+            val name = pr.optString("name")
+            val label = listOf(name, street, town, pr.optString("country")).filter { it.isNotBlank() }.distinct().take(3).joinToString(", ")
+            Place(label.ifBlank { "${c.getDouble(1)}, ${c.getDouble(0)}" }, c.getDouble(1), c.getDouble(0))
+        }
+    }
+
+    private fun nominatim(q: String): List<Place> {
+        val body = Http.get("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&accept-language=hu&q=${URLEncoder.encode(q, "UTF-8")}")
         val arr = JSONArray(body)
-        (0 until arr.length()).map { i ->
+        return (0 until arr.length()).map { i ->
             val o = arr.getJSONObject(i)
             val parts = o.optString("display_name").split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            val name = parts.take(3).joinToString(", ")
-            Place(name, o.getString("lat").toDouble(), o.getString("lon").toDouble())
+            Place(parts.take(3).joinToString(", "), o.getString("lat").toDouble(), o.getString("lon").toDouble())
         }
+    }
+
+    /**
+     * Forgiving search: coordinates, Google Maps links (also short links), place / company names,
+     * long addresses copied from Google Maps (shortened step by step if nothing is found).
+     */
+    suspend fun geocode(query: String, near: Place? = null): List<Place> = withContext(Dispatchers.IO) {
+        val text = query.trim()
+        if (text.isEmpty()) return@withContext emptyList()
+        // 1. links and coordinates
+        val url = URL.find(text)?.value
+        val expanded = if (url != null) try { expandUrl(url) } catch (e: Exception) { url } else null
+        val decoded = try { java.net.URLDecoder.decode(expanded ?: text, "UTF-8") } catch (e: Exception) { expanded ?: text }
+        coordsIn(decoded)?.let { (lat, lon) ->
+            val label = Regex("""/place/([^/@?]+)""").find(decoded)?.groupValues?.get(1)?.replace('+', ' ')
+                ?: if (url == null) text else reverse(lat, lon)
+            return@withContext listOf(Place(label, lat, lon))
+        }
+        // a link to a place without coordinates: search for its name
+        val q0 = Regex("""/place/([^/@?]+)""").find(decoded)?.groupValues?.get(1)?.replace('+', ' ')
+            ?: Regex("""[?&]q=([^&]+)""").find(decoded)?.groupValues?.get(1)?.replace('+', ' ')
+            ?: text.replace(URL, " ").trim()
+        // 2. clean up typical Google Maps clutter (plus codes, country names, "Ausztria" …)
+        val cleaned = q0
+            .replace(Regex("""\b[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b"""), " ")
+            .split(",").map { it.trim() }.filter { it.isNotEmpty() }
+            .filterNot { it.lowercase() in setOf("österreich", "austria", "ausztria", "magyarország", "hungary", "deutschland", "germany", "németország") }
+        val attempts = LinkedHashSet<String>()
+        attempts += cleaned.joinToString(", ")
+        for (n in cleaned.size - 1 downTo 1) attempts += cleaned.take(n).joinToString(", ")   // drop from the end
+        if (cleaned.size > 1) attempts += cleaned.drop(1).joinToString(", ")                  // drop a leading company name
+        for (a in attempts) {
+            if (a.isBlank()) continue
+            val r = try { photon(a, near) } catch (e: Exception) { emptyList() }
+            if (r.isNotEmpty()) return@withContext r
+        }
+        try { nominatim(cleaned.joinToString(", ")) } catch (e: Exception) { emptyList() }
+    }
+
+    /** Quick suggestions while typing. */
+    suspend fun suggest(query: String, near: Place?): List<Place> = withContext(Dispatchers.IO) {
+        if (query.trim().length < 3 || URL.containsMatchIn(query)) emptyList()
+        else try { photon(query.trim(), near) } catch (e: Exception) { emptyList() }
     }
 
     fun chargeMinutes(fromSoc: Double, toSoc: Double, chargerKw: Int, vehicle: Vehicle): Double {
