@@ -10,7 +10,9 @@ object Nav {
 
     /** Google Maps directions; [waypoints] = (lat, lon) in driving order (vias and charging stops). */
     fun mapsRouteUri(dest: Place, waypoints: List<Pair<Double, Double>>): Uri {
-        val sb = StringBuilder("https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate")
+        // no dir_action=navigate: in navigate mode the Maps app drops the waypoints / ends at the first one.
+        // Route preview keeps every stop and the final destination; "Indítás" starts navigation through all of them.
+        val sb = StringBuilder("https://www.google.com/maps/dir/?api=1&travelmode=driving")
         sb.append("&destination=").append(dest.lat).append(',').append(dest.lon)
         if (waypoints.isNotEmpty()) {
             sb.append("&waypoints=").append(Uri.encode(waypoints.joinToString("|") { "${it.first},${it.second}" }))

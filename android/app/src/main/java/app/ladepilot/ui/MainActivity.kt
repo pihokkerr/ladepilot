@@ -562,7 +562,7 @@ private fun MapRouteTab(profile: Profile, onProfile: (Profile) -> Unit) {
                                 if (first != null) Nav.waze(ctx, first.first, first.second) else Nav.waze(ctx, p.dest.lat, p.dest.lon)
                             }
                         }
-                        if (p.navPoints.isNotEmpty()) Text("A Waze csak egy célt fogad: először az első megállóhoz navigál.", color = Muted, fontSize = 11.sp)
+                        if (p.navPoints.isNotEmpty()) Text("A Google Maps útvonal-előnézettel nyílik (minden megálló + végcél) – ott nyomd meg az Indítást. A Waze csak egy célt fogad: először az első megállóhoz navigál.", color = Muted, fontSize = 11.sp)
                         if (p.navPoints.size > 9) Text("A Google Maps legfeljebb 9 megállót fogad – a többit útközben add hozzá.", color = Warn, fontSize = 11.sp)
                     }
                 }
