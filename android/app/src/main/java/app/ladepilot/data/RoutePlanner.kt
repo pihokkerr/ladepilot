@@ -205,21 +205,63 @@ object RoutePlanner {
         val q0 = Regex("""/place/([^/@?]+)""").find(decoded)?.groupValues?.get(1)?.replace('+', ' ')
             ?: Regex("""[?&]q=([^&]+)""").find(decoded)?.groupValues?.get(1)?.replace('+', ' ')
             ?: text.replace(URL, " ").trim()
-        // 2. clean up typical Google Maps clutter (plus codes, country names, "Ausztria" …)
+        // 2. clean up typical Google Maps clutter (plus codes, country names, lone postcodes)
+        val countries = setOf("österreich", "austria", "ausztria", "magyarország", "hungary", "deutschland", "germany", "németország")
         val cleaned = q0
             .replace(Regex("""\b[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}\b"""), " ")
-            .split(",").map { it.trim() }.filter { it.isNotEmpty() }
-            .filterNot { it.lowercase() in setOf("österreich", "austria", "ausztria", "magyarország", "hungary", "deutschland", "germany", "németország") }
+            .split(",").map { part ->
+                part.split(" ").filter { it.isNotBlank() && it.lowercase() !in countries }.joinToString(" ").trim()
+            }
+            .filter { it.isNotEmpty() && !it.all { ch -> ch.isDigit() } }
+        val fromLink = url != null
+        val qTokens = tokens(cleaned.joinToString(" "))
+        fun score(p: Place): Double {
+            if (qTokens.isEmpty()) return 0.0
+            val t = tokens(p.name)
+            return qTokens.count { it in t }.toDouble() / qTokens.size
+        }
+        fun rank(list: List<Place>): List<Place> {
+            if (list.isEmpty()) return list
+            val scored = list.map { it to score(it) }.sortedByDescending { it.second }
+            val best = scored.first().second
+            return scored.filter { it.second >= best * 0.7 }.map { it.first }
+        }
+        // 3. an address in the text (street + number / postcode): try the strict address search first
+        val addressParts = cleaned.filter { part -> part.any { it.isDigit() } }
+        val withoutName = if (cleaned.size > 1 && cleaned.first().none { it.isDigit() }) cleaned.drop(1) else cleaned
+        if (addressParts.isNotEmpty()) {
+            for (a in listOf(withoutName.joinToString(", "), addressParts.joinToString(", "))) {
+                val r = try { nominatim(a) } catch (e: Exception) { emptyList() }
+                if (r.isNotEmpty()) {
+                    // keep the place name from the link / query as label
+                    val name = if (cleaned.size > 1 && cleaned.first().none { it.isDigit() }) cleaned.first() + ", " else ""
+                    val out = r.map { it.copy(name = name + it.name) }
+                    return@withContext if (fromLink) out.take(1) else out.take(3)
+                }
+            }
+        }
+        // 4. forgiving name search, shortened step by step; accept only good matches
         val attempts = LinkedHashSet<String>()
         attempts += cleaned.joinToString(", ")
-        for (n in cleaned.size - 1 downTo 1) attempts += cleaned.take(n).joinToString(", ")   // drop from the end
-        if (cleaned.size > 1) attempts += cleaned.drop(1).joinToString(", ")                  // drop a leading company name
+        for (n in cleaned.size - 1 downTo 1) attempts += cleaned.take(n).joinToString(", ")
+        if (cleaned.size > 1) attempts += withoutName.joinToString(", ")
+        var fallback: List<Place> = emptyList()
         for (a in attempts) {
             if (a.isBlank()) continue
             val r = try { photon(a, near) } catch (e: Exception) { emptyList() }
-            if (r.isNotEmpty()) return@withContext r
+            if (r.isEmpty()) continue
+            val ranked = rank(r)
+            if (score(ranked.first()) >= 0.6) return@withContext if (fromLink) ranked.take(1) else ranked
+            if (fallback.isEmpty()) fallback = ranked
         }
-        try { nominatim(cleaned.joinToString(", ")) } catch (e: Exception) { emptyList() }
+        val nom = try { nominatim(cleaned.joinToString(", ")) } catch (e: Exception) { emptyList() }
+        val result = if (nom.isNotEmpty()) rank(nom) else fallback
+        if (fromLink) result.take(1) else result
+    }
+
+    private fun tokens(s: String): Set<String> {
+        val norm = java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD).replace(Regex("""\p{M}+"""), "")
+        return norm.split(Regex("""[^a-z0-9]+""")).filter { it.length >= 2 && it !in setOf("utca", "ut", "str", "strasse", "gasse", "the", "und", "es") }.toSet()
     }
 
     /** Quick suggestions while typing. */
