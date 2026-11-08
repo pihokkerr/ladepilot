@@ -927,61 +927,107 @@ private fun StopCard(st: app.ladepilot.data.ChargeStop, onClick: () -> Unit = {}
 // ================================================================== profile
 @Composable
 private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
-    var cap by remember(profile) { mutableStateOf(profile.capacityKwh.toString()) }
-    var summer by remember(profile) { mutableStateOf(profile.consSummer.toString()) }
-    var winter by remember(profile) { mutableStateOf(profile.consWinter.toString()) }
+    val v = profile.vehicle
+    var soh by remember(profile) { mutableStateOf(fmtNum(v.sohPct)) }
+    var correction by remember(profile) { mutableStateOf(profile.correctionPct.toString()) }
     var margin by remember(profile) { mutableStateOf(profile.marginPct.toString()) }
     var reserve by remember(profile) { mutableStateOf(profile.reservePct.toString()) }
     var maxSoc by remember(profile) { mutableStateOf(profile.maxChargeSoc.toString()) }
     var routeKw by remember(profile) { mutableStateOf(profile.routeMinKw.toString()) }
     var baseUrl by remember(profile) { mutableStateOf(profile.baseUrl) }
     var adding by remember { mutableStateOf(false) }
+    var carSearch by remember { mutableStateOf(false) }
 
     fun d(s: String, def: Double) = s.replace(',', '.').toDoubleOrNull() ?: def
-    fun i(s: String, def: Int) = s.trim().toIntOrNull() ?: def
+    fun i(s: String, def: Int) = s.trim().replace("+", "").toIntOrNull() ?: def
+    fun save() = onProfile(profile.copy(
+        vehicles = profile.vehicles.map { if (it.id == v.id) it.copy(sohPct = d(soh, v.sohPct).coerceIn(50.0, 100.0)) else it },
+        correctionPct = i(correction, profile.correctionPct).coerceIn(-40, 60),
+        marginPct = i(margin, profile.marginPct).coerceIn(0, 30),
+        reservePct = i(reserve, profile.reservePct).coerceIn(0, 50),
+        maxChargeSoc = i(maxSoc, profile.maxChargeSoc).coerceIn(50, 100),
+        routeMinKw = i(routeKw, profile.routeMinKw),
+    ))
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Header("Profil", "Tesla Model Y Long Range AWD") }
+        item { Header("Profil", v.name) }
+
+        // ---- car
         item {
             Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("AUTÓ ÉS FOGYASZTÁS", color = Muted, fontSize = 12.sp)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        NumField("Akku (kWh)", cap, { cap = it }, Modifier.weight(1f))
-                        NumField("Tartalék (%)", reserve, { reserve = it }, Modifier.weight(1f))
+                    Text("AUTÓ", color = Muted, fontSize = 12.sp)
+                    profile.vehicles.forEach { car ->
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()
+                            .clickable { onProfile(profile.copy(activeVehicleId = car.id)) }) {
+                            androidx.compose.material3.RadioButton(selected = car.id == v.id, onClick = { onProfile(profile.copy(activeVehicleId = car.id)) })
+                            Column(Modifier.weight(1f)) {
+                                Text(car.name, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(String.format(Locale.GERMANY, "%.1f kWh hasznos · SoH %s%% → %.1f kWh · max %d kW DC",
+                                    car.usableKwh, fmtNum(car.sohPct), car.capacityKwh, car.dcMaxKw.roundToInt()), color = Muted, fontSize = 12.sp)
+                            }
+                            if (profile.vehicles.size > 1) IconButton(onClick = {
+                                val rest = profile.vehicles.filter { it.id != car.id }
+                                onProfile(profile.copy(vehicles = rest, activeVehicleId = if (car.id == v.id) rest.first().id else profile.activeVehicleId))
+                            }) { Icon(Icons.Filled.Delete, "Törlés", tint = Muted) }
+                        }
                     }
+                    OutlinedButton(onClick = { carSearch = true }, modifier = Modifier.fillMaxWidth()) { Text("Autó keresése és hozzáadása") }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        NumField("Nyár kWh/100", summer, { summer = it }, Modifier.weight(1f))
-                        NumField("Tél kWh/100", winter, { winter = it }, Modifier.weight(1f))
+                        NumField("Akku állapota, SoH (%)", soh, { soh = it }, Modifier.weight(1f))
+                        NumField("Saját korrekció (%)", correction, { correction = it }, Modifier.weight(1f))
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        NumField("Ráhagyás (%)", margin, { margin = it }, Modifier.weight(1f))
-                        NumField("Max. töltés (%)", maxSoc, { maxSoc = it }, Modifier.weight(1f))
+                    Text("SoH: a battery-teszt szerinti állapot (pl. 91,9). Korrekció: ha a valós fogyasztásod több (+) vagy kevesebb (−), mint amit az app számol.",
+                        color = Muted, fontSize = 12.sp)
+                }
+            }
+        }
+
+        // ---- driving
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("VEZETÉS ÉS TERVEZÉS", color = Muted, fontSize = 12.sp)
+                    Text("Tempó autópályán", fontSize = 13.sp)
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(110, 120, 130, 140).forEach { k ->
+                            FilterChip(selected = profile.highwayKmh == k, onClick = { onProfile(profile.copy(highwayKmh = k)) }, label = { Text("$k km/h") })
+                        }
                     }
-                    NumField("Útvonalon min. kW", routeKw, { routeKw = it }, Modifier.fillMaxWidth())
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("auto" to "Évszak: auto", "summer" to "Nyár", "winter" to "Tél").forEach { (k, l) ->
                             FilterChip(selected = profile.season == k, onClick = { onProfile(profile.copy(season = k)) }, label = { Text(l) })
                         }
                     }
+                    val est = { kmh: Int -> app.ladepilot.data.EnergyModel.kwhPerKm(v, profile, kmh.toDouble()) * 100 }
+                    Text(String.format(Locale.GERMANY,
+                        "Becsült fogyasztás (ráhagyással): autópálya %d km/h → %.1f · országút 90 km/h → %.1f · város → %.1f kWh/100 km",
+                        profile.highwayKmh, est(profile.highwayKmh), est(90), est(40)), color = Muted, fontSize = 12.sp)
+                    Text("Az útvonalon a szakaszok jellege szerint számol: autópályán a választott tempóval, országúton 90–100, településen a városi értékkel.",
+                        color = Muted, fontSize = 12.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        NumField("Tartalék (%)", reserve, { reserve = it }, Modifier.weight(1f))
+                        NumField("Ráhagyás (%)", margin, { margin = it }, Modifier.weight(1f))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        NumField("Max. töltés (%)", maxSoc, { maxSoc = it }, Modifier.weight(1f))
+                        NumField("Útvonalon min. kW", routeKw, { routeKw = it }, Modifier.weight(1f))
+                    }
+                    Button(onClick = { save() }, modifier = Modifier.fillMaxWidth()) { Text("Mentés") }
+                }
+            }
+        }
+
+        // ---- map style
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("TÉRKÉP", color = Muted, fontSize = 12.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("dark" to "Sötét", "liberty" to "Színes", "light" to "Világos").forEach { (k, l) ->
                             FilterChip(selected = profile.mapStyle == k, onClick = { onProfile(profile.copy(mapStyle = k)) }, label = { Text(l) })
                         }
                     }
-                    Text("Autópályás átlag a fórumok alapján: nyáron kb. 18–20, télen 22–25 kWh/100 km (130 km/h).", color = Muted, fontSize = 12.sp)
-                    OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, singleLine = true,
-                        label = { Text("Adatszerver") }, modifier = Modifier.fillMaxWidth())
-                    Button(onClick = {
-                        onProfile(profile.copy(
-                            capacityKwh = d(cap, profile.capacityKwh), consSummer = d(summer, profile.consSummer),
-                            consWinter = d(winter, profile.consWinter), marginPct = i(margin, profile.marginPct),
-                            reservePct = i(reserve, profile.reservePct).coerceIn(0, 50),
-                            maxChargeSoc = i(maxSoc, profile.maxChargeSoc).coerceIn(50, 100),
-                            routeMinKw = i(routeKw, profile.routeMinKw), baseUrl = baseUrl.trim().ifBlank { profile.baseUrl },
-                        ))
-                    }, modifier = Modifier.fillMaxWidth()) { Text("Mentés") }
                 }
             }
         }
@@ -1016,7 +1062,21 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
             Text("Példa: Tesla-tulajdonosi ár Ausztriában → ország AT, szöveg „Tesla”, fix ár 0,48 €/kWh. " +
                 "Ionity Power → szöveg „IONITY”, fix ár a szerződésed szerint.", color = Muted, fontSize = 12.sp)
         }
+        item {
+            Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("SPECIÁLIS", color = Muted, fontSize = 12.sp)
+                OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, singleLine = true,
+                    label = { Text("Adatszerver") }, modifier = Modifier.fillMaxWidth())
+                if (baseUrl.trim() != profile.baseUrl) TextButton(onClick = { onProfile(profile.copy(baseUrl = baseUrl.trim().ifBlank { profile.baseUrl })) }) { Text("Adatszerver mentése") }
+                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
+                    color = Color(0xFF5C5C62), fontSize = 11.sp)
+            }
+        }
         item { Spacer(Modifier.height(24.dp)) }
+    }
+    if (carSearch) CarSearchDialog(onDismiss = { carSearch = false }) { car ->
+        val list = if (profile.vehicles.any { it.id == car.id }) profile.vehicles else profile.vehicles + car
+        onProfile(profile.copy(vehicles = list, activeVehicleId = car.id)); carSearch = false
     }
     if (adding) AddTariffDialog(onDismiss = { adding = false }) { t ->
         onProfile(profile.copy(tariffs = profile.tariffs + t)); adding = false
@@ -1031,6 +1091,35 @@ private fun NumField(label: String, value: String, onChange: (String) -> Unit, m
     OutlinedTextField(
         value = value, onValueChange = onChange, label = { Text(label) }, singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = modifier,
+    )
+}
+
+@Composable
+private fun CarSearchDialog(onDismiss: () -> Unit, onPick: (app.ladepilot.data.Vehicle) -> Unit) {
+    val ctx = LocalContext.current
+    var q by remember { mutableStateOf("") }
+    val results = remember(q) { if (q.length < 2) emptyList() else app.ladepilot.data.CarDb.search(ctx, q) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Card1,
+        title = { Text("Autó keresése") },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Bezár") } },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(q, { q = it }, singleLine = true, label = { Text("pl. ioniq 5 awd, model y long") }, modifier = Modifier.fillMaxWidth())
+                LazyColumn(Modifier.heightIn(max = 400.dp)) {
+                    items(results, key = { it.id }) { e ->
+                        Column(Modifier.fillMaxWidth().clickable { onPick(e.toVehicle()) }.padding(vertical = 8.dp)) {
+                            Text(e.title, fontWeight = FontWeight.SemiBold)
+                            Text(String.format(Locale.GERMANY, "%.1f kWh hasznos · átlag %.1f kWh/100 km · max %d kW DC",
+                                e.kwh, e.avg, e.dc.roundToInt()), color = Muted, fontSize = 12.sp)
+                        }
+                    }
+                }
+                Text("Forrás: Open EV Data", color = Color(0xFF5C5C62), fontSize = 11.sp)
+            }
+        },
     )
 }
 

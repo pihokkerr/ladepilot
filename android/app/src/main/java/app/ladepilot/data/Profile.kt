@@ -3,7 +3,6 @@ package app.ladepilot.data
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
-import java.time.LocalDate
 
 /**
  * A charging card / subscription the user has.
@@ -24,15 +23,17 @@ data class Tariff(
 )
 
 data class Profile(
-    /** usable battery capacity, kWh (Model Y LR 2023 ≈ 75 kWh usable) */
-    val capacityKwh: Double = 75.0,
-    /** highway consumption incl. heating etc., kWh/100 km */
-    val consSummer: Double = 19.0,
-    val consWinter: Double = 23.0,
+    /** saved cars; the first one with [activeVehicleId] is used for planning */
+    val vehicles: List<Vehicle> = listOf(Vehicle.DEFAULT),
+    val activeVehicleId: String = Vehicle.DEFAULT.id,
+    /** speed driven on motorways, km/h */
+    val highwayKmh: Int = 130,
+    /** personal correction of the consumption model, % (+ = I use more) */
+    val correctionPct: Int = 0,
     /** "auto" (Nov–Mar = winter), "summer", "winter" */
     val season: String = "auto",
     /** extra safety margin on consumption, % */
-    val marginPct: Int = 10,
+    val marginPct: Int = 5,
     /** minimum state of charge at every arrival, % */
     val reservePct: Int = 10,
     val startSoc: Int = 80,
@@ -51,15 +52,11 @@ data class Profile(
     val baseUrl: String = "https://ladepilot.pages.dev",
     val tariffs: List<Tariff> = Tariffs.presets,
 ) {
-    fun consumption(): Double {
-        val winter = when (season) {
-            "summer" -> false
-            "winter" -> true
-            else -> LocalDate.now().monthValue.let { it >= 11 || it <= 3 }
-        }
-        val base = if (winter) consWinter else consSummer
-        return base * (1 + marginPct / 100.0)
-    }
+    val vehicle: Vehicle get() = vehicles.firstOrNull { it.id == activeVehicleId } ?: vehicles.firstOrNull() ?: Vehicle.DEFAULT
+    val capacityKwh: Double get() = vehicle.capacityKwh
+
+    /** motorway consumption at the chosen speed, kWh/100 km (incl. season, correction, margin) */
+    fun consumption(): Double = EnergyModel.kwhPerKm(vehicle, this, highwayKmh.toDouble()) * 100
 }
 
 object Tariffs {
@@ -92,7 +89,8 @@ object ProfileStore {
     }
 
     private fun toJson(p: Profile) = JSONObject().apply {
-        put("capacityKwh", p.capacityKwh); put("consSummer", p.consSummer); put("consWinter", p.consWinter)
+        put("vehicles", JSONArray().apply { p.vehicles.forEach { put(it.toJson()) } })
+        put("activeVehicleId", p.activeVehicleId); put("highwayKmh", p.highwayKmh); put("correctionPct", p.correctionPct)
         put("season", p.season); put("marginPct", p.marginPct); put("reservePct", p.reservePct)
         put("startSoc", p.startSoc); put("maxChargeSoc", p.maxChargeSoc); put("lossPct", p.lossPct)
         put("minKw", p.minKw); put("routeMinKw", p.routeMinKw); put("optimize", p.optimize); put("mapStyle", p.mapStyle); put("excludedOps", JSONArray(p.excludedOps.toList())); put("baseUrl", p.baseUrl)
@@ -121,12 +119,15 @@ object ProfileStore {
         // keep presets that were added in newer app versions
         val ids = saved.map { it.id }.toSet()
         val tariffs = saved + Tariffs.presets.filter { it.id !in ids }
+        val vehicles = o.optJSONArray("vehicles")?.let { a -> (0 until a.length()).mapNotNull { i -> try { Vehicle.fromJson(a.getJSONObject(i)) } catch (e: Exception) { null } } }
+            ?.takeIf { it.isNotEmpty() } ?: d.vehicles
         return Profile(
-            capacityKwh = o.optDouble("capacityKwh", d.capacityKwh),
-            consSummer = o.optDouble("consSummer", d.consSummer),
-            consWinter = o.optDouble("consWinter", d.consWinter),
+            vehicles = vehicles,
+            activeVehicleId = o.optString("activeVehicleId", vehicles.first().id),
+            highwayKmh = o.optInt("highwayKmh", d.highwayKmh),
+            correctionPct = o.optInt("correctionPct", d.correctionPct),
             season = o.optString("season", d.season),
-            marginPct = o.optInt("marginPct", d.marginPct),
+            marginPct = if (o.has("vehicles")) o.optInt("marginPct", d.marginPct) else d.marginPct,
             reservePct = o.optInt("reservePct", d.reservePct),
             startSoc = o.optInt("startSoc", d.startSoc),
             maxChargeSoc = o.optInt("maxChargeSoc", d.maxChargeSoc),

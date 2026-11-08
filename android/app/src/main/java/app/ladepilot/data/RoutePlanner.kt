@@ -67,6 +67,8 @@ data class Plan(
     val vias: List<Place> = emptyList(),
     /** km along the route where each via is reached */
     val viaKm: List<Double> = emptyList(),
+    /** average consumption over this route, kWh/100 km */
+    val avgKwh100: Double = 0.0,
 ) {
     val totalCost: Double get() = stops.sumOf { it.cost }
 
@@ -90,7 +92,8 @@ object RoutePlanner {
     private const val SAMPLE_KM = 1.0
 
     private class RP(val lat: Double, val lon: Double, val km: Double, val sec: Double)
-    private class RouteData(val km: Double, val sec: Double, val poly: List<DoubleArray>, val legKm: List<Double>)
+    private class RouteData(val km: Double, val sec: Double, val poly: List<DoubleArray>, val legKm: List<Double>,
+                            val segM: List<Double>, val segS: List<Double>)
     @Volatile private var routeCache: Pair<String, RouteData>? = null
 
     /**
@@ -135,27 +138,13 @@ object RoutePlanner {
         }
     }
 
-    /** Typical Model Y LR charge curve (kW available at a given SoC on a fast charger). */
-    private fun curveKw(soc: Double): Double = when {
-        soc < 20 -> 230.0
-        soc < 30 -> 200.0
-        soc < 40 -> 170.0
-        soc < 50 -> 140.0
-        soc < 60 -> 115.0
-        soc < 70 -> 95.0
-        soc < 80 -> 75.0
-        soc < 90 -> 50.0
-        else -> 30.0
-    }
-
-    fun chargeMinutes(fromSoc: Double, toSoc: Double, chargerKw: Int, capacityKwh: Double): Double {
+    fun chargeMinutes(fromSoc: Double, toSoc: Double, chargerKw: Int, vehicle: Vehicle): Double {
         var m = 0.0
         var s = fromSoc
-        val step = 1.0
+        val cap = vehicle.capacityKwh
         while (s < toSoc - 1e-6) {
-            val inc = min(step, toSoc - s)
-            val kw = min(chargerKw * 0.95, curveKw(s)).coerceAtLeast(5.0)
-            m += capacityKwh * inc / 100.0 / kw * 60.0
+            val inc = min(1.0, toSoc - s)
+            m += cap * inc / 100.0 / vehicle.chargeKw(s, chargerKw) * 60.0
             s += inc
         }
         return m
@@ -178,13 +167,20 @@ object RoutePlanner {
         val key = all.joinToString(";") { "${it.lat},${it.lon}" }
         val rd = routeCache?.takeIf { it.first == key }?.second ?: run {
             val url = "https://router.project-osrm.org/route/v1/driving/" +
-                all.joinToString(";") { "${it.lon},${it.lat}" } + "?overview=full&geometries=polyline6"
+                all.joinToString(";") { "${it.lon},${it.lat}" } + "?overview=full&geometries=polyline6&annotations=distance,duration"
             val body = withContext(Dispatchers.IO) { Http.get(url) }
             val route = JSONObject(body).getJSONArray("routes").getJSONObject(0)
             val legs = route.optJSONArray("legs")
             val legKm = if (legs == null) emptyList() else (0 until legs.length()).map { legs.getJSONObject(it).getDouble("distance") / 1000.0 }
+            val segM = ArrayList<Double>(); val segS = ArrayList<Double>()
+            if (legs != null) for (i in 0 until legs.length()) {
+                val an = legs.getJSONObject(i).optJSONObject("annotation") ?: continue
+                val dA = an.optJSONArray("distance"); val tA = an.optJSONArray("duration")
+                if (dA == null || tA == null) continue
+                for (j in 0 until dA.length()) { segM += dA.getDouble(j); segS += tA.optDouble(j, 0.0) }
+            }
             RouteData(route.getDouble("distance") / 1000.0, route.getDouble("duration"),
-                Geo.decodePolyline(route.getString("geometry"), 6), legKm).also { routeCache = key to it }
+                Geo.decodePolyline(route.getString("geometry"), 6), legKm, segM, segS).also { routeCache = key to it }
         }
         val totalKm = rd.km
         val totalSec = rd.sec
@@ -221,10 +217,44 @@ object RoutePlanner {
         }
         cands.sortBy { it.alongKm }
 
-        // ---- 4. energy model
-        val cap = profile.capacityKwh
-        val kwhPerKm = profile.consumption() / 100.0
-        val socPerKm = kwhPerKm / cap * 100.0
+        // ---- 4. energy model: speed dependent consumption along the route
+        val vehicle = profile.vehicle
+        val cap = vehicle.capacityKwh
+        val cumKm = DoubleArray(rd.segM.size + 1)
+        val cumKwh = DoubleArray(rd.segM.size + 1)
+        if (rd.segM.isNotEmpty()) {
+            val f = totalKm / (rd.segM.sum() / 1000.0).coerceAtLeast(0.001)
+            for (i in rd.segM.indices) {
+                val km = rd.segM[i] / 1000.0 * f
+                val routerKmh = if (rd.segS[i] > 0) rd.segM[i] / rd.segS[i] * 3.6 else 50.0
+                val v = EnergyModel.drivenSpeed(routerKmh, profile)
+                cumKm[i + 1] = cumKm[i] + km
+                cumKwh[i + 1] = cumKwh[i] + km * EnergyModel.kwhPerKm(vehicle, profile, v)
+            }
+        }
+        val avgKwhPerKm = if (cumKm.last() > 0) cumKwh.last() / cumKm.last()
+            else EnergyModel.kwhPerKm(vehicle, profile, EnergyModel.drivenSpeed(totalKm / (totalSec / 3600).coerceAtLeast(0.01), profile))
+        /** cumulative kWh at a km along the route */
+        fun energyAt(km: Double): Double {
+            if (cumKm.last() <= 0) return km * avgKwhPerKm
+            if (km <= 0) return 0.0
+            if (km >= cumKm.last()) return cumKwh.last() + (km - cumKm.last()) * avgKwhPerKm
+            var lo = 0; var hi = cumKm.size - 1
+            while (hi - lo > 1) { val mid = (lo + hi) / 2; if (cumKm[mid] <= km) lo = mid else hi = mid }
+            val t = (km - cumKm[lo]) / (cumKm[hi] - cumKm[lo]).coerceAtLeast(1e-9)
+            return cumKwh[lo] + t * (cumKwh[hi] - cumKwh[lo])
+        }
+        /** km along the route where the cumulative energy reaches [e] */
+        fun kmAtEnergy(e: Double): Double {
+            if (cumKm.last() <= 0) return e / avgKwhPerKm
+            if (e >= cumKwh.last()) return cumKm.last() + (e - cumKwh.last()) / avgKwhPerKm
+            var lo = 0; var hi = cumKwh.size - 1
+            while (hi - lo > 1) { val mid = (lo + hi) / 2; if (cumKwh[mid] <= e) lo = mid else hi = mid }
+            val t = (e - cumKwh[lo]) / (cumKwh[hi] - cumKwh[lo]).coerceAtLeast(1e-9)
+            return cumKm[lo] + t * (cumKm[hi] - cumKm[lo])
+        }
+        fun socUsed(fromKm: Double, toKm: Double) = (energyAt(toKm) - energyAt(fromKm)) / cap * 100.0
+        fun detourSoc(c: Candidate) = c.offKm * 1.3 * avgKwhPerKm / cap * 100.0
         val reserve = profile.reservePct.toDouble()
         val maxSoc = profile.maxChargeSoc.toDouble()
         val loss = 1 + profile.lossPct / 100.0
@@ -233,7 +263,7 @@ object RoutePlanner {
 
         val views = cands.map { c ->
             val eta = startMillis + (c.routeSec * 1000).toLong()
-            val a = startSoc - (c.alongKm + c.offKm * 1.3) * socPerKm
+            val a = startSoc - socUsed(0.0, c.alongKm) - detourSoc(c)
             CandidateView(c, eta, a, a >= reserve, Pricing.quote(c.site, profile.routeMinKw, profile, eta))
         }
 
@@ -250,44 +280,45 @@ object RoutePlanner {
             val eta = startMillis + ((c.routeSec + delaySec) * 1000).toLong()
             val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta)
                 ?: Quote(0.0, 0.0, 0.0, null, null, c.site.maxKw)
-            val arrival = soc - (c.alongKm - pos + c.offKm * 1.3) * socPerKm
+            val arrival = soc - socUsed(pos, c.alongKm) - detourSoc(c)
             if (arrival < reserve) {
                 note = "${c.site.name} csak ${arrival.toInt()}%-kal érhető el."
                 if (arrival < 0) feasible = false
             }
             val nextKm = if (i < fixed.lastIndex) fixed[i + 1].alongKm else totalKm
-            val need = reserve + (nextKm - c.alongKm + c.offKm * 1.3) * socPerKm + 2.0
+            val need = reserve + socUsed(c.alongKm, nextKm) + detourSoc(c) + 2.0
             val target = ceil(min(max(need, arrival), maxSoc)).coerceAtLeast(arrival)
             val kwhBat = (target - arrival) / 100.0 * cap
-            val mins = chargeMinutes(arrival, target, q.kw, cap)
+            val mins = chargeMinutes(arrival, target, q.kw, vehicle)
             val cost = kwhBat * loss * q.energyEur + (q.eurMin ?: 0.0) * mins +
                 (if (kwhBat > 0) (c.site.startFeeLocal ?: 0.0) / c.site.fx else 0.0)
             val st = ChargeStop(c, eta, arrival, target, kwhBat, kwhBat * loss, mins, q, cost)
             stops += st
             delaySec += mins * 60 + detourSec(c) + 300
             pos = c.alongKm
-            soc = target - c.offKm * 1.3 * socPerKm
+            soc = target - detourSoc(c)
         }
 
         // ---- 5b. automatic stops: search combinations of stops and pick the best whole trip
         //      price mode: total cost (+ a little for time); time mode: total time (+ a little for cost)
         val stopOverheadMin = 5.0
         fun evaluate(pos0: Double, soc0: Double, delay0: Double, strict: Boolean): List<StopOption> {
-            val reachKm = pos0 + (soc0 - reserve) / socPerKm
+            val reachKm = kmAtEnergy(energyAt(pos0) + (soc0 - reserve) / 100.0 * cap)
             return cands.asSequence()
                 .filter { it.alongKm > pos0 + 3 && it.alongKm + it.offKm * 1.3 <= reachKm && it.site.id !in excludedIds }
                 .mapNotNull { c ->
                     val eta = startMillis + ((c.routeSec + delay0) * 1000).toLong()
                     val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta) ?: return@mapNotNull null
-                    val arrival = soc0 - (c.alongKm - pos0 + c.offKm * 1.3) * socPerKm
+                    val arrival = soc0 - socUsed(pos0, c.alongKm) - detourSoc(c)
+                    if (arrival < reserve) return@mapNotNull null
                     // only stop where charging is actually needed (no "top up 1 %" stops)
                     if (strict && arrival > 60.0) return@mapNotNull null
-                    val need = reserve + (totalKm - c.alongKm + c.offKm * 1.3) * socPerKm + 2.0
+                    val need = reserve + socUsed(c.alongKm, totalKm) + detourSoc(c) + 2.0
                     val target = ceil(min(max(need, arrival + 10), maxSoc))
                     if (strict && target - arrival < 10) return@mapNotNull null
                     val kwhBat = (target - arrival) / 100.0 * cap
                     val billed = kwhBat * loss
-                    val mins = chargeMinutes(arrival, target, q.kw, cap)
+                    val mins = chargeMinutes(arrival, target, q.kw, vehicle)
                     val cost = billed * q.energyEur + (q.eurMin ?: 0.0) * mins + ((c.site.startFeeLocal ?: 0.0) / c.site.fx)
                     StopOption(ChargeStop(c, eta, arrival, target, kwhBat, billed, mins, q, cost),
                         lostMin = mins + detourSec(c) / 60 + stopOverheadMin, extraStop = need > maxSoc)
@@ -297,7 +328,7 @@ object RoutePlanner {
 
         class Tail(val stops: List<ChargeStop>, val cost: Double, val minutes: Double, val soc: Double, val pos: Double, val delay: Double)
         fun search(pos0: Double, soc0: Double, delay0: Double, depth: Int): Tail? {
-            if (soc0 - (totalKm - pos0) * socPerKm >= reserve) return Tail(emptyList(), 0.0, 0.0, soc0, pos0, delay0)
+            if (soc0 - socUsed(pos0, totalKm) >= reserve) return Tail(emptyList(), 0.0, 0.0, soc0, pos0, delay0)
             if (depth >= 5) return null
             var evals = evaluate(pos0, soc0, delay0, strict = true)
             if (evals.isEmpty()) evals = evaluate(pos0, soc0, delay0, strict = false)
@@ -312,7 +343,7 @@ object RoutePlanner {
             var bestScore = Double.MAX_VALUE
             for (o in pruned) {
                 val st = o.stop
-                val rest = search(st.cand.alongKm, st.targetSoc - st.cand.offKm * 1.3 * socPerKm,
+                val rest = search(st.cand.alongKm, st.targetSoc - detourSoc(st.cand),
                     delay0 + o.lostMin * 60, depth + 1) ?: continue
                 val cost = st.cost + rest.cost
                 val minutes = o.lostMin + rest.minutes
@@ -334,11 +365,12 @@ object RoutePlanner {
             soc = tail.soc
             delaySec = tail.delay
         }
-        val arrivalSoc = soc - (totalKm - pos) * socPerKm
+        val arrivalSoc = soc - socUsed(pos, totalKm)
         Plan(
             origin, dest, totalKm, totalSec, startSoc, startMillis, stops, arrivalSoc,
             startMillis + ((totalSec + delaySec) * 1000).toLong(), feasible, note, views,
             fixedStopIds, excludedIds, optimize, simplify(poly), vias, viaKm,
+            avgKwh100 = energyAt(totalKm) / totalKm.coerceAtLeast(0.001) * 100,
         )
     }
 }
