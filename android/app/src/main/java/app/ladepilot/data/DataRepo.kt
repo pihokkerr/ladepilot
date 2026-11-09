@@ -30,6 +30,7 @@ object DataRepo {
         "HU" to "/api/hu",
         "DE" to "/api/de",
         "IT" to "/api/it",
+        "HR" to "/api/hr",
     )
     private const val MAX_AGE_MS = 10 * 60 * 1000L
 
