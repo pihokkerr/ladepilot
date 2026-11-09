@@ -1,20 +1,12 @@
-import json, urllib.request, gzip
-H = {"User-Agent": "Ladepilot/1.0 (personal, non-commercial)", "Accept": "application/json", "Accept-Encoding": "gzip"}
-def get(u):
-    r = urllib.request.urlopen(urllib.request.Request(u, headers=H), timeout=120); raw = r.read()
-    if r.headers.get("Content-Encoding") == "gzip": raw = gzip.decompress(raw)
-    return json.loads(raw)
-base = "https://olcsontoltok.hu/api/chargers/map-catalog"
-def prices(doc):
-    out = {}
-    for c in doc["chargers"]:
-        if c["id"] in (1232,) or "Tesla" in c["name"] and len(out) < 3 or "MOL" in (c.get("operatorName") or "") and len(out) < 5:
-            out[c["id"]] = (c["name"][:40], (c.get("schedule") or [{}])[0].get("price"))
-    return out
-ref = prices(get(base)); print("REF", ref)
-for q in ["subscriptionId=12", "subscriptionIds=12", "subscriptions=12", "subscription=12", "subscriptionIds[]=12", "subs=12", "subscriptionId=5", "subscriptionIds=5,12,9"]:
-    try:
-        d = get(base + "?" + q); p = prices(d)
-        print("Q", q, "DIFF" if p != ref else "same", {k: v for k, v in p.items() if ref.get(k) != v})
-    except Exception as e:
-        print("Q", q, "ERR", e)
+import json, urllib.request, gzip, collections, re
+for c in ["at", "de", "hu"]:
+    r = urllib.request.urlopen(urllib.request.Request(f"https://ladepilot.pages.dev/api/{c}", headers={"Accept-Encoding": "gzip"}), timeout=120)
+    raw = r.read(); enc = r.headers.get("Content-Encoding")
+    print("ENC", c, enc, len(raw))
+    if enc == "gzip": raw = gzip.decompress(raw)
+    d = json.loads(raw)
+    cnt = collections.Counter(d["ops"][s[2]] for s in d["sites"])
+    print("OPS", c, json.dumps(cnt.most_common(70), ensure_ascii=False))
+    for pat in ["ionity", "tesla", "shell", "smatrics", "wien", "enbw", "ewe", "aral", "linz", "omv", "mol", "lidl", "evn", "kelag", "ella", "energie steiermark", "salzburg", "vbg|illwerke|vkw", "tiwag", "mobiliti", "e.on", "elli", "fastned", "allego", "petrol"]:
+        m = {k: v for k, v in cnt.items() if re.search(pat, k, re.I)}
+        print("MATCH", c, pat, json.dumps(m, ensure_ascii=False)[:500])
