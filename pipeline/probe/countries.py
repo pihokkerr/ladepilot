@@ -1,6 +1,6 @@
 import json, urllib.request, gzip, collections, re
 for c in ["at", "de", "hu"]:
-    r = urllib.request.urlopen(urllib.request.Request(f"https://ladepilot.pages.dev/api/{c}", headers={"Accept-Encoding": "gzip"}), timeout=120)
+    r = urllib.request.urlopen(urllib.request.Request(f"https://ladepilot.pages.dev/api/{c}", headers={"Accept-Encoding": "gzip", "User-Agent": "Mozilla/5.0 Ladepilot-probe"}), timeout=120)
     raw = r.read(); enc = r.headers.get("Content-Encoding")
     print("ENC", c, enc, len(raw))
     if enc == "gzip": raw = gzip.decompress(raw)
