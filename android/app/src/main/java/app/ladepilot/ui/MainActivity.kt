@@ -1059,6 +1059,7 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
     var baseUrl by remember(profile) { mutableStateOf(profile.baseUrl) }
     var adding by remember { mutableStateOf(false) }
     var tariffGroup by remember { mutableStateOf(if (profile.tariffs.any { it.enabled }) "Bekapcsolt" else "Ausztria") }
+    val ctx = LocalContext.current
     var carSearch by remember { mutableStateOf(false) }
 
     fun d(s: String, def: Double) = s.replace(',', '.').toDoubleOrNull() ?: def
