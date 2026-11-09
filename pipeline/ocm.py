@@ -6,7 +6,8 @@ It has locations, power and connectors, but no live status and only free-text pr
 Prices: parsed from the free text where possible, otherwise the public list price of the
 big networks (LIST_PRICES) – both flagged as estimate (flag 2).
 
-Usage: OCM_API_KEY=... python pipeline/ocm.py --country HR --out out/hr.json
+Usage: OCM_API_KEY=... python pipeline/ocm.py --countries HR,SI,CZ --outdir out
+       (writes out/<cc>.json per country; EUROPE = all European countries without a better source)
 """
 import argparse
 import json
@@ -61,19 +62,40 @@ def list_price(cc, op, kw):
     return None
 
 
+# countries with a better (official, live, priced) source are not taken from OCM
+BETTER = {"AT", "DE", "HU", "IT"}
+EUROPE = ["AD", "AL", "BA", "BE", "BG", "CH", "CY", "CZ", "DK", "EE", "ES", "FI", "FR", "GB", "GR", "HR", "IE", "IS",
+          "LI", "LT", "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS", "SE", "SI", "SK",
+          "SM", "UA", "XK"]
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--country", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--countries", default="EUROPE")
+    ap.add_argument("--outdir", required=True)
     args = ap.parse_args()
-    cc = args.country.upper()
     if not os.environ.get("OCM_API_KEY"):
         print("OCM_API_KEY is not set – skipping", file=sys.stderr)
         sys.exit(0)
-
+    ccs = EUROPE if args.countries.upper() == "EUROPE" else [c.strip().upper() for c in args.countries.split(",")]
     ref = get("referencedata")
     op_names = {o["ID"]: o["Title"] for o in ref.get("Operators") or []}
-    pois = get("poi", countrycode=cc, maxresults=20000, compact="true", verbose="false")
+    os.makedirs(args.outdir, exist_ok=True)
+    failed = []
+    for cc in ccs:
+        if cc in BETTER:
+            continue
+        try:
+            build_country(cc, op_names, os.path.join(args.outdir, cc.lower() + ".json"))
+        except Exception as e:
+            failed.append(cc)
+            print(f"  {cc} FAILED: {e}", file=sys.stderr)
+    if len(failed) > len(ccs) // 2:
+        sys.exit("too many countries failed: " + ",".join(failed))
+
+
+def build_country(cc, op_names, out):
+    pois = get("poi", countrycode=cc, maxresults=100000, compact="true", verbose="false")
     print(f"  OCM {cc}: {len(pois)} POIs", file=sys.stderr)
 
     ops, op_index, sites = [], {}, []
@@ -109,9 +131,9 @@ def main():
         sites.append([f"{cc}-OCM-{p.get('ID')}", name, op_index[op], round(lat, 5), round(lon, 5), addr, cc, points, None])
     priced = sum(1 for s in sites if any(pt[2] is not None for pt in s[7]))
     print(f"  sites: {len(sites)}, with (estimated) price: {priced}", file=sys.stderr)
-    if len(sites) < 50:
-        sys.exit(f"Only {len(sites)} sites – refusing to overwrite good data")
-    write(args.out, ops, sites, "Open Charge Map (openchargemap.org, CC BY 4.0) + listaárak")
+    if not sites:
+        raise RuntimeError("no sites")
+    write(out, ops, sites, "Open Charge Map (openchargemap.org, CC BY 4.0) + listaárak")
 
 
 if __name__ == "__main__":

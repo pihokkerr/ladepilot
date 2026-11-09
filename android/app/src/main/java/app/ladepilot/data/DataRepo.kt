@@ -25,13 +25,11 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 object DataRepo {
     private const val TAG = "DataRepo"
-    private val SOURCES = listOf(
-        "AT" to "/api/at",
-        "HU" to "/api/hu",
-        "DE" to "/api/de",
-        "IT" to "/api/it",
-        "HR" to "/api/hr",
-    )
+    /** one data file per selected country: /api/at, /api/hr … */
+    private fun sources(ctx: Context): List<Pair<String, String>> =
+        ProfileStore.load(ctx).countries.sortedBy { Countries.NAMES.keys.indexOf(it) }.map { it to "/api/${it.lowercase()}" }
+    /** community data (Open Charge Map) changes slowly – don't download it every 10 minutes */
+    private const val OCM_MAX_AGE_MS = 6 * 60 * 60 * 1000L
     private const val MAX_AGE_MS = 10 * 60 * 1000L
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -62,6 +60,12 @@ object DataRepo {
         }
     }
 
+    /** Re-reads the cached files (e.g. after the country selection changed) and downloads what is missing. */
+    fun reload(ctx: Context) {
+        val app = ctx.applicationContext
+        scope.launch { loadFromDisk(app); refresh(app) }
+    }
+
     fun refreshNow(ctx: Context) {
         val app = ctx.applicationContext
         scope.launch { refresh(app) }
@@ -69,7 +73,7 @@ object DataRepo {
 
     private suspend fun loadFromDisk(ctx: Context) = mutex.withLock {
         val parsed = withContext(Dispatchers.IO) { parseAll(ctx) }
-        if (parsed.first.isNotEmpty()) publish(parsed.first, parsed.second)
+        publish(parsed.first, parsed.second)
     }
 
     private suspend fun refresh(ctx: Context) {
@@ -80,7 +84,9 @@ object DataRepo {
             val base = ProfileStore.load(ctx).baseUrl.trimEnd('/')
             val errors = mutableListOf<String>()
             withContext(Dispatchers.IO) {
-                for ((src, path) in SOURCES) {
+                for ((src, path) in sources(ctx)) {
+                    val f = cacheFile(ctx, src)
+                    if (src !in Countries.LIVE && f.exists() && System.currentTimeMillis() - f.lastModified() < OCM_MAX_AGE_MS) continue
                     try {
                         Http.download("$base$path", cacheFile(ctx, src))
                     } catch (e: Exception) {
@@ -91,7 +97,7 @@ object DataRepo {
             }
             val parsed = withContext(Dispatchers.IO) { parseAll(ctx) }
             lastNetwork = System.currentTimeMillis()
-            lastError = if (errors.size == SOURCES.size) errors.joinToString("; ") else null
+            lastError = if (errors.isNotEmpty() && errors.size == sources(ctx).size) errors.joinToString("; ") else null
             loading = false
             if (parsed.first.isNotEmpty()) publish(parsed.first, parsed.second) else notifyChanged()
         }
@@ -102,7 +108,7 @@ object DataRepo {
     private fun parseAll(ctx: Context): Pair<List<Site>, Map<String, String?>> {
         val all = ArrayList<Site>(140000)
         val gen = HashMap<String, String?>()
-        for ((src, _) in SOURCES) {
+        for ((src, _) in sources(ctx)) {
             val f = cacheFile(ctx, src)
             if (!f.exists() || f.length() < 10) continue
             try {

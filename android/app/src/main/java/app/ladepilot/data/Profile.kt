@@ -86,6 +86,8 @@ data class Profile(
     /** operators hidden on the map and ignored by the planner */
     val excludedOps: Set<String> = emptySet(),
     val baseUrl: String = "https://ladepilot.pages.dev",
+    /** countries whose charging data is downloaded (ISO codes) */
+    val countries: Set<String> = Countries.DEFAULT,
     val tariffs: List<Tariff> = Tariffs.presets,
 ) {
     val vehicle: Vehicle get() = vehicles.firstOrNull { it.id == activeVehicleId } ?: vehicles.firstOrNull() ?: Vehicle.DEFAULT
@@ -93,6 +95,24 @@ data class Profile(
 
     /** motorway consumption at the chosen speed, kWh/100 km (incl. season, correction, margin) */
     fun consumption(): Double = EnergyModel.kwhPerKm(vehicle, this, highwayKmh.toDouble()) * 100
+}
+
+object Countries {
+    /** live + priced official data; everything else comes from Open Charge Map */
+    val LIVE = setOf("AT", "DE", "HU", "IT")
+    val DEFAULT = setOf("AT", "DE", "HU", "IT", "SI", "HR", "SK", "CZ", "CH")
+    val NAMES = linkedMapOf(
+        "AT" to "Ausztria", "DE" to "Németország", "HU" to "Magyarország", "IT" to "Olaszország",
+        "SI" to "Szlovénia", "HR" to "Horvátország", "SK" to "Szlovákia", "CZ" to "Csehország", "CH" to "Svájc",
+        "PL" to "Lengyelország", "RO" to "Románia", "RS" to "Szerbia", "BA" to "Bosznia-Hercegovina", "ME" to "Montenegró",
+        "AL" to "Albánia", "MK" to "Észak-Macedónia", "XK" to "Koszovó", "BG" to "Bulgária", "GR" to "Görögország",
+        "FR" to "Franciaország", "ES" to "Spanyolország", "PT" to "Portugália", "BE" to "Belgium", "NL" to "Hollandia",
+        "LU" to "Luxemburg", "LI" to "Liechtenstein", "MC" to "Monaco", "SM" to "San Marino", "AD" to "Andorra",
+        "DK" to "Dánia", "SE" to "Svédország", "NO" to "Norvégia", "FI" to "Finnország", "IS" to "Izland",
+        "EE" to "Észtország", "LV" to "Lettország", "LT" to "Litvánia", "GB" to "Egyesült Királyság", "IE" to "Írország",
+        "MT" to "Málta", "CY" to "Ciprus", "UA" to "Ukrajna", "MD" to "Moldova",
+    )
+    fun name(cc: String) = NAMES[cc] ?: cc
 }
 
 object Tariffs {
@@ -187,6 +207,7 @@ object ProfileStore {
         put("season", p.season); put("marginPct", p.marginPct); put("reservePct", p.reservePct)
         put("startSoc", p.startSoc); put("maxChargeSoc", p.maxChargeSoc); put("lossPct", p.lossPct)
         put("minKw", p.minKw); put("routeMinKw", p.routeMinKw); put("optimize", p.optimize); put("mapStyle", p.mapStyle); put("excludedOps", JSONArray(p.excludedOps.toList())); put("baseUrl", p.baseUrl)
+        put("countries", JSONArray(p.countries.toList()))
         put("tariffs", JSONArray().apply {
             p.tariffs.forEach { t ->
                 put(JSONObject().apply {
@@ -231,6 +252,7 @@ object ProfileStore {
             mapStyle = o.optString("mapStyle", d.mapStyle),
             excludedOps = o.optJSONArray("excludedOps")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() } ?: emptySet(),
             baseUrl = o.optString("baseUrl", d.baseUrl).ifBlank { d.baseUrl },
+            countries = o.optJSONArray("countries")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }?.takeIf { it.isNotEmpty() } ?: d.countries,
             tariffs = tariffs,
         )
     }

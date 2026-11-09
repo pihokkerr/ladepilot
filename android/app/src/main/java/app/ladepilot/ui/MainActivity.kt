@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package app.ladepilot.ui
 
 import android.Manifest
@@ -116,6 +118,9 @@ import app.ladepilot.data.RoutePlanner
 import app.ladepilot.data.Site
 import app.ladepilot.data.Tariff
 import app.ladepilot.data.Tariffs
+import app.ladepilot.data.Countries
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -267,7 +272,7 @@ private fun DataInfo() {
     val rows = remember(ver) {
         val by = DataRepo.sites.groupingBy { it.src }.eachCount()
         val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy.MM.dd. HH:mm")
-        listOf("AT" to "Ausztria", "DE" to "Németország", "HU" to "Magyarország", "IT" to "Olaszország", "HR" to "Horvátország").map { (code, name) ->
+        ProfileStore.load(ctx).countries.sortedBy { Countries.NAMES.keys.indexOf(it) }.map { code -> code to Countries.name(code) }.map { (code, name) ->
             val g = DataRepo.generated[code]?.let {
                 try { java.time.OffsetDateTime.parse(it).atZoneSameInstant(java.time.ZoneId.systemDefault()).format(fmt) } catch (e: Exception) { it }
             } ?: "–"
@@ -291,7 +296,7 @@ private fun dataSummary(): String {
     val s = DataRepo.sites
     if (s.isEmpty()) return if (DataRepo.loading) "Adatok betöltése…" else (DataRepo.lastError ?: "Nincs adat")
     val by = s.groupingBy { it.src }.eachCount()
-    return listOf("AT", "HU", "DE", "IT", "HR").filter { by.containsKey(it) }.joinToString(" · ") { "$it ${by[it]}" } +
+    return by.keys.sortedBy { Countries.NAMES.keys.indexOf(it) }.filter { by.containsKey(it) }.joinToString(" · ") { "$it ${by[it]}" } +
         if (DataRepo.loading) " · frissítés…" else ""
 }
 
@@ -416,9 +421,9 @@ private fun SiteDialog(site: Site, profile: Profile, onAddStop: (() -> Unit)? = 
                     when (site.src) {
                         "HU" -> "Forrás: OTPR (ELMOB). Élő foglaltság nélkül."
                         "IT" -> "Forrás: Piattaforma Unica Nazionale (MASE). Ár csak ott, ahol a szolgáltató megadta."
-                        "HR" -> "Forrás: Open Charge Map (CC BY 4.0). Ár: szolgáltatói listaár vagy közösségi adat – becslés."
                         "DE" -> if (site.id.startsWith("DE-BNA-")) "Helyszín: Bundesnetzagentur Ladesäulenregister. Ár: a szolgáltató listaára." else "Forrás: Mobilithek (AFIR, CC0). Foglaltság: ha a szolgáltató küldi."
-                        else -> "Forrás: E-Control ladestellen.at, élő adat."
+                        "AT" -> "Forrás: E-Control ladestellen.at, élő adat."
+                        else -> "Forrás: Open Charge Map (CC BY 4.0). Ár: szolgáltatói listaár vagy közösségi adat – becslés."
                     }, color = Color(0xFF5C5C62), fontSize = 11.sp,
                 )
             }
@@ -1147,6 +1152,28 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                         }
                     }
                 }
+            }
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 8.dp)) {
+                Text("ORSZÁGOK", color = Muted, fontSize = 12.sp)
+                Text("Csak a kiválasztott országok töltői töltődnek le. Élő adat és ár: AT, DE, HU, IT – a többi Open Charge Map (helyszín, teljesítmény, ár csak néhol).",
+                    color = Muted, fontSize = 12.sp)
+                var showAll by remember { mutableStateOf(false) }
+                val codes = Countries.NAMES.keys.toList().let { all -> if (showAll) all else all.filter { it in Countries.DEFAULT || it in profile.countries } }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    codes.forEach { cc ->
+                        val on = cc in profile.countries
+                        FilterChip(selected = on, onClick = {
+                            val next = if (on) profile.countries - cc else profile.countries + cc
+                            if (next.isNotEmpty()) {
+                                onProfile(profile.copy(countries = next))
+                                DataRepo.reload(ctx)
+                            }
+                        }, label = { Text(Countries.name(cc) + if (cc in Countries.LIVE) " ●" else "") })
+                    }
+                }
+                TextButton(onClick = { showAll = !showAll }) { Text(if (showAll) "Kevesebb ország" else "Összes európai ország") }
             }
         }
         item {

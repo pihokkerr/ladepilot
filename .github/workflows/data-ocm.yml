@@ -1,0 +1,36 @@
+name: Európa (Open Charge Map) frissítése
+
+on:
+  schedule:
+    - cron: "23 3,15 * * *"   # naponta kétszer – a közösségi adat lassan változik
+  workflow_dispatch:
+
+concurrency:
+  group: data-ocm
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Európa – Open Charge Map, országonként
+        env:
+          OCM_API_KEY: ${{ secrets.OCM_API_KEY }}
+        run: python pipeline/ocm.py --countries EUROPE --outdir out
+
+      - name: Feltöltés Cloudflare KV-ba
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          ls -la out
+          for f in out/*.json; do
+            npx --yes wrangler@4 kv key put "$(basename "$f")" --path "$f" --namespace-id "${{ secrets.KV_NAMESPACE_ID }}" --remote
+          done
