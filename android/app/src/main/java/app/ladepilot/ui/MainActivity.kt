@@ -259,6 +259,34 @@ private fun KwBadge(kw: Int) {
     }
 }
 
+@Composable
+private fun DataInfo() {
+    val ctx = LocalContext.current
+    val ver by DataRepo.version.collectAsState()
+    val version = remember { try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName } catch (e: Exception) { "?" } }
+    val rows = remember(ver) {
+        val by = DataRepo.sites.groupingBy { it.src }.eachCount()
+        val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy.MM.dd. HH:mm")
+        listOf("AT" to "Ausztria", "DE" to "Németország", "HU" to "Magyarország").map { (code, name) ->
+            val g = DataRepo.generated[code]?.let {
+                try { java.time.OffsetDateTime.parse(it).atZoneSameInstant(java.time.ZoneId.systemDefault()).format(fmt) } catch (e: Exception) { it }
+            } ?: "–"
+            Triple(name, by[code] ?: 0, g)
+        }
+    }
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text("Ladepilot $version", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        for ((name, n, g) in rows) {
+            Row(Modifier.fillMaxWidth()) {
+                Text(name, color = Muted, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                Text("%,d töltőhely".format(n).replace(',', ' '), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(end = 10.dp))
+                Text(g, color = Muted, fontSize = 12.sp)
+            }
+        }
+        if (DataRepo.loading) Text("Frissítés folyamatban…", color = Muted, fontSize = 12.sp)
+    }
+}
+
 private fun dataSummary(): String {
     val s = DataRepo.sites
     if (s.isEmpty()) return if (DataRepo.loading) "Adatok betöltése…" else (DataRepo.lastError ?: "Nincs adat")
@@ -386,7 +414,7 @@ private fun SiteDialog(site: Site, profile: Profile, onAddStop: (() -> Unit)? = 
                 Text(
                     when (site.src) {
                         "HU" -> "Forrás: OTPR (ELMOB). Élő foglaltság nélkül."
-                        "DE" -> "Forrás: Mobilithek (Tesla, AFIR)."
+                        "DE" -> "Forrás: Mobilithek (AFIR, CC0). Foglaltság: ha a szolgáltató küldi."
                         else -> "Forrás: E-Control ladestellen.at, élő adat."
                     }, color = Color(0xFF5C5C62), fontSize = 11.sp,
                 )
@@ -1154,7 +1182,8 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                 OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, singleLine = true,
                     label = { Text("Adatszerver") }, modifier = Modifier.fillMaxWidth())
                 if (baseUrl.trim() != profile.baseUrl) TextButton(onClick = { onProfile(profile.copy(baseUrl = baseUrl.trim().ifBlank { profile.baseUrl })) }) { Text("Adatszerver mentése") }
-                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
+                DataInfo()
+                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek (AFIR, CC0) · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
                     color = Color(0xFF5C5C62), fontSize = 11.sp)
             }
         }

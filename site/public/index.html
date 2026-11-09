@@ -254,7 +254,7 @@ async function load(){
   const results = await Promise.allSettled([
     fetch("/api/at", { cache: "no-cache" }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
     fetch("/api/hu", { cache: "no-cache" }).then(r => r.ok ? r.json() : Promise.reject(r.status)),
-    fetch("data/de_tesla.json", { cache: "no-cache" }).then(r => r.ok ? r.json() : Promise.reject(r.status))
+    fetch("/api/de", { cache: "no-cache" }).then(r => r.ok ? r.json() : Promise.reject(r.status))
   ]);
   const all = [];
   const labels = ["AT", "HU", "DE"];

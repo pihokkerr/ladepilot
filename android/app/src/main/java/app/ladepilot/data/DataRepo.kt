@@ -28,7 +28,7 @@ object DataRepo {
     private val SOURCES = listOf(
         "AT" to "/api/at",
         "HU" to "/api/hu",
-        "DE" to "/data/de_tesla.json",
+        "DE" to "/api/de",
     )
     private const val MAX_AGE_MS = 10 * 60 * 1000L
 
@@ -98,7 +98,7 @@ object DataRepo {
     private fun cacheFile(ctx: Context, src: String) = File(ctx.filesDir, "data_$src.json")
 
     private fun parseAll(ctx: Context): Pair<List<Site>, Map<String, String?>> {
-        val all = ArrayList<Site>(25000)
+        val all = ArrayList<Site>(90000)
         val gen = HashMap<String, String?>()
         for ((src, _) in SOURCES) {
             val f = cacheFile(ctx, src)
@@ -189,7 +189,7 @@ object DataRepo {
         while (r.hasNext()) {
             r.beginArray()
             val kw = r.optDouble()?.toInt() ?: 0
-            val plugs = r.optString() ?: ""
+            val plugs = (r.optString() ?: "").intern()
             val kwh = r.optDouble()
             val perMin = r.optDouble()
             val status = r.optDouble()?.toInt() ?: 0
