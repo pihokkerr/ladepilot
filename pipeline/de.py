@@ -340,6 +340,87 @@ def merge_dynamic(doc, state, adhoc_ids, now_ts, now):
     return n
 
 
+# ---------------------------------------------------------------- BNetzA supplement
+# Operators that publish nothing on Mobilithek. Locations come from the Bundesnetzagentur
+# Ladesäulenregister; the price is the operator's public ad-hoc list price (marked as estimate).
+BNETZA_PAGE = "https://www.bundesnetzagentur.de/DE/Fachthemen/ElektrizitaetundGas/E-Mobilitaet/DownloadundKontakt.html"
+SUPPLEMENT = {
+    # IONITY Direct Germany from 1 Jul 2026: location based, up to 0.76 €/kWh (0.69 at cheaper sites)
+    "IONITY": {"match": "ionity", "eur": 0.76},
+}
+
+
+def fetch_bnetza_csv():
+    import re
+    ua = {"User-Agent": "Ladepilot/1.0 (personal, non-commercial)"}
+    html = urllib.request.urlopen(urllib.request.Request(BNETZA_PAGE, headers=ua), timeout=60).read().decode("utf-8", "replace")
+    links = re.findall(r'href="([^"]*Ladesaeulenregister[^"]*\.csv[^"]*)"', html)
+    if not links:
+        raise RuntimeError("no CSV link on the BNetzA download page")
+    url = links[0].replace("&amp;", "&")
+    if url.startswith("/"):
+        url = "https://www.bundesnetzagentur.de" + url
+    raw = urllib.request.urlopen(urllib.request.Request(url, headers=ua), timeout=300).read()
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            return raw.decode(enc), url
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1"), url
+
+
+def parse_bnetza(csv_text):
+    import csv
+    lines = csv_text.splitlines()
+    start = next(i for i, l in enumerate(lines) if "Betreiber" in l and "Breitengrad" in l)
+    rows = csv.DictReader(lines[start:], delimiter=";")
+
+    def num(v):
+        try:
+            return float(str(v).strip().replace(".", "").replace(",", ".")) if "," in str(v) else float(str(v).strip())
+        except ValueError:
+            return None
+
+    fields = rows.fieldnames or []
+    print("  BNetzA columns: " + " | ".join(fields[:20]), file=sys.stderr)
+
+    def col(prefix):
+        return next((f for f in fields if f and f.strip().lower().startswith(prefix.lower())), prefix)
+    C_LAT, C_LON, C_KW, C_N = col("Breitengrad"), col("Längengrad"), col("Nennleistung Ladeeinrichtung"), col("Anzahl Ladepunkte")
+    C_PLUG, C_STATUS = col("Steckertypen1"), col("Status")
+
+    groups = {}
+    for r in rows:
+        betr = (r.get("Betreiber") or "").strip()
+        key = next((k for k, c in SUPPLEMENT.items() if c["match"] in betr.lower()), None)
+        if not key:
+            continue
+        if (r.get(C_STATUS) or "In Betrieb").strip().lower() not in ("in betrieb", ""):
+            continue
+        lat = num(r.get(C_LAT)); lon = num(r.get(C_LON))
+        if lat is None or lon is None:
+            continue
+        kw = num(r.get(C_KW)) or 0
+        n = int(num(r.get(C_N)) or 1)
+        plugs = r.get(C_PLUG) or ""
+        street = f"{(r.get('Straße') or '').strip()} {(r.get('Hausnummer') or '').strip()}".strip()
+        city = f"{(r.get('Postleitzahl') or '').strip()} {(r.get('Ort') or '').strip()}".strip()
+        g = groups.setdefault((key, round(lat, 3), round(lon, 3)), {"lat": lat, "lon": lon, "addr": ", ".join(x for x in [street, city] if x),
+                                                                "city": (r.get("Ort") or "").strip(), "pts": []})
+        per_point_kw = kw / n if n > 1 and kw > 400 else kw    # some entries give the sum of all points
+        pcode = plug_code(["T2COMBO" if "CCS" in plugs.upper() or "COMBO" in plugs.upper() else plugs])
+        for _ in range(max(1, min(n, 12))):
+            g["pts"].append([round(per_point_kw), pcode])
+    sites = []
+    for (key, _, _), g in groups.items():
+        c = SUPPLEMENT[key]
+        pts = [["", kw, pl, c["eur"], None, 2] for kw, pl in g["pts"]]   # flag 2 = estimated list price
+        sites.append({"id": f"DE-BNA-{key}-{g['lat']:.4f},{g['lon']:.4f}", "name": f"{key} {g['city']}".strip(),
+                      "op": key, "lat": round(g["lat"], 5), "lon": round(g["lon"], 5), "addr": g["addr"],
+                      "pts": pts, "sched": None, "start": None})
+    return sites
+
+
 # ---------------------------------------------------------------- merge + output
 def build(feeds, state, now_ts):
     ops, op_index, out = [], {}, []
@@ -369,7 +450,7 @@ def build(feeds, state, now_ts):
                 op_index[op] = len(ops)
                 ops.append(op)
             points, start = [], s.get("start")
-            for evse, kw, plugs, kwh, per_min in pts:
+            for evse, kw, plugs, kwh, per_min, *flags in pts:
                 st = state.get(evse_key(evse)) if evse else None
                 status = 0
                 if st:
@@ -378,7 +459,7 @@ def build(feeds, state, now_ts):
                     if st[5] and (st[2] is not None or st[3] is not None):
                         kwh, per_min = st[2], st[3]
                         start = st[4] if st[4] is not None else start
-                points.append([kw, plugs, kwh, per_min, status])
+                points.append([kw, plugs, kwh, per_min, status] + ([flags[0]] if flags and flags[0] else []))
             row = [s["id"], s["name"], op_index[op], s["lat"], s["lon"], s["addr"], "DE", points, s.get("sched")]
             if start:
                 row.append({"fees": {"startFee": start}})
@@ -434,6 +515,22 @@ def main():
             except Exception as e:
                 print(f"  {name} dynamic FAILED: {e}", file=sys.stderr)
         feeds.append({"name": name, "sites": cached["sites"]})
+
+    # BNetzA register (monthly file) for operators missing on Mobilithek
+    bpath = os.path.join(args.cache, "static", "bnetza.json")
+    bcache = json.load(open(bpath)) if os.path.exists(bpath) else None
+    if not args.offline and (bcache is None or now_ts - bcache["fetched"] > 3 * 86400):
+        try:
+            text_csv, url = fetch_bnetza_csv()
+            bsites = parse_bnetza(text_csv)
+            if bsites:
+                bcache = {"fetched": now_ts, "url": url, "sites": bsites}
+                json.dump(bcache, open(bpath, "w"), separators=(",", ":"))
+            print(f"  BNetzA supplement: {len(bsites)} sites from {url.rsplit('/', 1)[-1]}", file=sys.stderr)
+        except Exception as e:
+            print(f"  BNetzA supplement FAILED: {e}", file=sys.stderr)
+    if bcache:
+        feeds.append({"name": "BNetzA", "sites": bcache["sites"]})
 
     # forget state entries not touched for a week
     state = {k: v for k, v in state.items() if now_ts - max(v[1], v[5]) < 7 * 86400}

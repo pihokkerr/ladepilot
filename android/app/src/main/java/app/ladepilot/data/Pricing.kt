@@ -18,6 +18,8 @@ data class Quote(
     val kw: Int,
     /** true when [eur] contains an estimate from a per-minute fee */
     val estimated: Boolean = false,
+    /** list price of the operator (no per-site data) */
+    val approx: Boolean = false,
     val free: Boolean = false,
 )
 
@@ -87,7 +89,7 @@ object Pricing {
                 if (base == null && perMin == null) continue
                 val (energy, t) = if (base != null) applyTariffs(site, base, profile.tariffs) else (0.0 to null)
                 val timePart = (perMin ?: 0.0) * 60.0 / effectiveKw(p.kw)
-                Quote(energy + timePart, energy, base ?: 0.0, t, perMin, p.kw, estimated = timePart > 0)
+                Quote(energy + timePart, energy, base ?: 0.0, t, perMin, p.kw, estimated = timePart > 0 || p.approx, approx = p.approx)
             }
             if (best == null || q.eur < best.eur || (q.eur == best.eur && p.kw > best.kw)) best = q
         }
@@ -104,6 +106,7 @@ object Pricing {
     /** Headline text for a quote. */
     fun headline(site: Site, q: Quote): String = when {
         q.free -> "Ingyenes"
+        q.approx -> "~" + perKwh(site, q.energyEur) + " (listaár, becsült)"
         q.estimated && q.baseEur == 0.0 -> "~" + perKwh(site, q.eur) + " (percdíj alapján becsülve)"
         else -> perKwh(site, q.energyEur)
     }

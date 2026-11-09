@@ -10,6 +10,8 @@ data class ChargePoint(
     val status: Int,
     /** free of charge */
     val free: Boolean = false,
+    /** price is the operator's public list price, not per-site data */
+    val approx: Boolean = false,
 )
 
 /** Recurring time-of-day price (local wall clock, minutes after midnight). */

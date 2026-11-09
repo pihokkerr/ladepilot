@@ -389,7 +389,8 @@ private fun SiteDialog(site: Site, profile: Profile, onAddStop: (() -> Unit)? = 
                 if (q != null) {
                     PriceQ(site, q, big = true)
                     if (q.estimated) Text(
-                        if (q.baseEur == 0.0) "Percdíjas töltő – ${Pricing.eurText(q.eurMin ?: 0.0)}/perc, ${Pricing.effectiveKw(q.kw).roundToInt()} kW átlaggal számolva"
+                        if (q.approx) "Becsült ár: a szolgáltató nyilvános ad-hoc listaára (legfeljebb ennyi, helyszínenként olcsóbb is lehet)."
+                        else if (q.baseEur == 0.0) "Percdíjas töltő – ${Pricing.eurText(q.eurMin ?: 0.0)}/perc, ${Pricing.effectiveKw(q.kw).roundToInt()} kW átlaggal számolva"
                         else "Benne: ${Pricing.perKwh(site, q.energyEur)} + ${Pricing.eurText(q.eurMin ?: 0.0)}/perc",
                         color = Muted, fontSize = 12.sp)
                     if (site.cur == "HUF") Text("≈ ${Pricing.eurText(q.eur)} / kWh", color = Muted, fontSize = 13.sp)
@@ -414,7 +415,7 @@ private fun SiteDialog(site: Site, profile: Profile, onAddStop: (() -> Unit)? = 
                 Text(
                     when (site.src) {
                         "HU" -> "Forrás: OTPR (ELMOB). Élő foglaltság nélkül."
-                        "DE" -> "Forrás: Mobilithek (AFIR, CC0). Foglaltság: ha a szolgáltató küldi."
+                        "DE" -> if (site.id.startsWith("DE-BNA-")) "Helyszín: Bundesnetzagentur Ladesäulenregister. Ár: a szolgáltató listaára." else "Forrás: Mobilithek (AFIR, CC0). Foglaltság: ha a szolgáltató küldi."
                         else -> "Forrás: E-Control ladestellen.at, élő adat."
                     }, color = Color(0xFF5C5C62), fontSize = 11.sp,
                 )
@@ -1183,7 +1184,7 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                     label = { Text("Adatszerver") }, modifier = Modifier.fillMaxWidth())
                 if (baseUrl.trim() != profile.baseUrl) TextButton(onClick = { onProfile(profile.copy(baseUrl = baseUrl.trim().ifBlank { profile.baseUrl })) }) { Text("Adatszerver mentése") }
                 DataInfo()
-                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek (AFIR, CC0) · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
+                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek (AFIR, CC0), Bundesnetzagentur Ladesäulenregister · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
                     color = Color(0xFF5C5C62), fontSize = 11.sp)
             }
         }
