@@ -21,6 +21,8 @@ data class Quote(
     /** list price of the operator (no per-site data) */
     val approx: Boolean = false,
     val free: Boolean = false,
+    /** the charger publishes no price at all; [eur] is a planning assumption */
+    val unknown: Boolean = false,
 )
 
 data class Availability(val free: Int, val known: Int, val total: Int, val off: Int)
@@ -101,7 +103,18 @@ object Pricing {
     }
 
     /** Marker / list label: "52", "~61" (estimated from per-minute fee), "0" for free. */
+    /** Price assumed for route planning when a charger publishes none (EUR/kWh, before tariffs). */
+    const val UNKNOWN_EUR = 0.75
+
+    /** Planning quote for a charger without any published price, so it can still be used as a stop. */
+    fun unknownQuote(site: Site, minKw: Int, profile: Profile): Quote? {
+        val kw = site.points.filter { it.kw >= minKw }.maxOfOrNull { it.kw } ?: return null
+        val (energy, t) = applyTariffs(site, UNKNOWN_EUR * site.fx / site.fx, profile.tariffs, kw)
+        return Quote(energy, energy, UNKNOWN_EUR, t, null, kw, estimated = true, approx = true, unknown = true)
+    }
+
     fun labelQ(site: Site, q: Quote): String = when {
+        q.unknown -> "?"
         q.free -> "0"
         q.estimated -> "~" + label(site, q.eur)
         else -> label(site, q.eur)
@@ -110,6 +123,7 @@ object Pricing {
     /** Headline text for a quote. */
     fun headline(site: Site, q: Quote): String = when {
         q.free -> "Ingyenes"
+        q.unknown -> "Ár nem ismert (tervezés: ~" + perKwh(site, q.energyEur) + ")"
         q.approx -> "~" + perKwh(site, q.energyEur) + " (listaár, becsült)"
         q.estimated && q.baseEur == 0.0 -> "~" + perKwh(site, q.eur) + " (percdíj alapján becsülve)"
         else -> perKwh(site, q.energyEur)

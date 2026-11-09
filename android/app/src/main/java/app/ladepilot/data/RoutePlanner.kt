@@ -396,7 +396,8 @@ object RoutePlanner {
         val views = cands.map { c ->
             val eta = startMillis + (c.routeSec * 1000).toLong()
             val a = startSoc - socUsed(0.0, c.alongKm) - detourSoc(c)
-            CandidateView(c, eta, a, a >= reserve, Pricing.quote(c.site, profile.routeMinKw, profile, eta))
+            CandidateView(c, eta, a, a >= reserve, Pricing.quote(c.site, profile.routeMinKw, profile, eta)
+                ?: Pricing.unknownQuote(c.site, profile.routeMinKw, profile))
         }
 
         // ---- 5. greedy stop selection: charge only as much as needed, at the best price in reach
@@ -411,6 +412,7 @@ object RoutePlanner {
         for ((i, c) in fixed.withIndex()) {
             val eta = startMillis + ((c.routeSec + delaySec) * 1000).toLong()
             val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta)
+                ?: Pricing.unknownQuote(c.site, profile.routeMinKw, profile)
                 ?: Quote(0.0, 0.0, 0.0, null, null, c.site.maxKw)
             val arrival = soc - socUsed(pos, c.alongKm) - detourSoc(c)
             if (arrival < reserve) {
@@ -440,7 +442,9 @@ object RoutePlanner {
                 .filter { it.alongKm > pos0 + 3 && it.alongKm + it.offKm * 1.3 <= reachKm && it.site.id !in excludedIds }
                 .mapNotNull { c ->
                     val eta = startMillis + ((c.routeSec + delay0) * 1000).toLong()
-                    val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta) ?: return@mapNotNull null
+                    // chargers without a published price stay usable (Italy, Croatia …) with an assumed price
+                    val q = Pricing.quote(c.site, profile.routeMinKw, profile, eta)
+                        ?: Pricing.unknownQuote(c.site, profile.routeMinKw, profile) ?: return@mapNotNull null
                     val arrival = soc0 - socUsed(pos0, c.alongKm) - detourSoc(c)
                     if (arrival < reserve) return@mapNotNull null
                     // only stop where charging is actually needed (no "top up 1 %" stops)
