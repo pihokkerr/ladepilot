@@ -3,6 +3,8 @@ on: workflow_dispatch
 jobs:
   probe:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Certificate
@@ -28,7 +30,8 @@ jobs:
             grep -i "content-type\|content-encoding" "$f.h" | tr -d '\r'
             head -c 400 "$f.body"; echo
           done
-      - name: Pack
-        run: cd probe && for f in *.body; do head -c 3000000 "$f" > "${f%.body}.sample"; done; tar czf ../probe.tgz *.sample *.h
-      - uses: actions/upload-artifact@v4
-        with: {name: probe, path: probe.tgz, retention-days: 3}
+      - name: Push samples to probe branch
+        run: |
+          cd probe && mkdir ../samples && for f in *.body; do head -c 2500000 "$f" | gzip -9 > "../samples/${f%.body}.json.gz"; done
+          cd ../samples && git init -q -b probe && git add . && git -c user.name=bot -c user.email=bot@x commit -qm samples
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" probe:probe-data
