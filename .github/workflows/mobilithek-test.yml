@@ -1,0 +1,21 @@
+name: Mobilithek cert test
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode certificate
+        env:
+          CERT: ${{ secrets.MOBILITHEK_CERT }}
+          PW: ${{ secrets.MOBILITHEK_CERT_PASSWORD }}
+        run: |
+          [ -n "$CERT" ] && echo "cert secret: present (${#CERT} chars)" || { echo "cert secret MISSING"; exit 1; }
+          [ -n "$PW" ] && echo "password secret: present" || echo "password secret MISSING"
+          echo "$CERT" | tr -d ' \r\n' | base64 -d > c.p12 && echo "base64 ok, $(stat -c%s c.p12) bytes"
+          openssl pkcs12 -in c.p12 -passin env:PW -nokeys -legacy -out cert.pem 2>/dev/null || openssl pkcs12 -in c.p12 -passin env:PW -nokeys -out cert.pem
+          openssl pkcs12 -in c.p12 -passin env:PW -nocerts -nodes -legacy -out key.pem 2>/dev/null || openssl pkcs12 -in c.p12 -passin env:PW -nocerts -nodes -out key.pem
+          openssl x509 -in cert.pem -noout -subject -issuer -enddate
+      - name: TLS handshake with Mobilithek
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --cert cert.pem --key key.pem "https://mobilithek.info:8443/mobilithek/api/v1.0/subscription?subscriptionID=0" || true)
+          echo "HTTP status with client cert: $code (anything but 000 = TLS with the certificate works)"
