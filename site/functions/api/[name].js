@@ -1,6 +1,6 @@
 // Serves the condensed data files stored in Cloudflare KV (binding: DATA).
 // GET /api/at  ->  KV key "at.json"
-const ALLOWED = new Set(["at", "de", "hu"]);
+const ALLOWED = new Set(["at", "de", "hu", "it", "si", "hr"]);
 
 export async function onRequestGet({ params, env }) {
   const name = String(params.name || "");

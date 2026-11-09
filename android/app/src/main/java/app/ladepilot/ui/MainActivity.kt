@@ -267,7 +267,7 @@ private fun DataInfo() {
     val rows = remember(ver) {
         val by = DataRepo.sites.groupingBy { it.src }.eachCount()
         val fmt = java.time.format.DateTimeFormatter.ofPattern("yyyy.MM.dd. HH:mm")
-        listOf("AT" to "Ausztria", "DE" to "Németország", "HU" to "Magyarország").map { (code, name) ->
+        listOf("AT" to "Ausztria", "DE" to "Németország", "HU" to "Magyarország", "IT" to "Olaszország").map { (code, name) ->
             val g = DataRepo.generated[code]?.let {
                 try { java.time.OffsetDateTime.parse(it).atZoneSameInstant(java.time.ZoneId.systemDefault()).format(fmt) } catch (e: Exception) { it }
             } ?: "–"
@@ -291,7 +291,7 @@ private fun dataSummary(): String {
     val s = DataRepo.sites
     if (s.isEmpty()) return if (DataRepo.loading) "Adatok betöltése…" else (DataRepo.lastError ?: "Nincs adat")
     val by = s.groupingBy { it.src }.eachCount()
-    return listOf("AT", "HU", "DE").filter { by.containsKey(it) }.joinToString(" · ") { "$it ${by[it]}" } +
+    return listOf("AT", "HU", "DE", "IT").filter { by.containsKey(it) }.joinToString(" · ") { "$it ${by[it]}" } +
         if (DataRepo.loading) " · frissítés…" else ""
 }
 
@@ -415,6 +415,7 @@ private fun SiteDialog(site: Site, profile: Profile, onAddStop: (() -> Unit)? = 
                 Text(
                     when (site.src) {
                         "HU" -> "Forrás: OTPR (ELMOB). Élő foglaltság nélkül."
+                        "IT" -> "Forrás: Piattaforma Unica Nazionale (MASE). Ár csak ott, ahol a szolgáltató megadta."
                         "DE" -> if (site.id.startsWith("DE-BNA-")) "Helyszín: Bundesnetzagentur Ladesäulenregister. Ár: a szolgáltató listaára." else "Forrás: Mobilithek (AFIR, CC0). Foglaltság: ha a szolgáltató küldi."
                         else -> "Forrás: E-Control ladestellen.at, élő adat."
                     }, color = Color(0xFF5C5C62), fontSize = 11.sp,
@@ -1196,7 +1197,7 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                     label = { Text("Adatszerver") }, modifier = Modifier.fillMaxWidth())
                 if (baseUrl.trim() != profile.baseUrl) TextButton(onClick = { onProfile(profile.copy(baseUrl = baseUrl.trim().ifBlank { profile.baseUrl })) }) { Text("Adatszerver mentése") }
                 DataInfo()
-                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek (AFIR, CC0), Bundesnetzagentur Ladesäulenregister · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
+                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek (AFIR, CC0), Bundesnetzagentur Ladesäulenregister, Piattaforma Unica Nazionale (IT) · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
                     color = Color(0xFF5C5C62), fontSize = 11.sp)
             }
         }

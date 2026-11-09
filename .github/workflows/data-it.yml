@@ -1,0 +1,47 @@
+name: Olasz adatok frissítése
+
+on:
+  schedule:
+    - cron: "12,42 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: data-it
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install boto3 requests
+
+      - name: Időablak
+        id: t
+        run: echo "slot=$(( $(date +%s) / 43200 ))" >> "$GITHUB_OUTPUT"
+
+      - name: Részletek (cache, 12 óránként frissül)
+        uses: actions/cache@v4
+        with:
+          path: cache/it_details.json
+          key: it-details-${{ steps.t.outputs.slot }}-${{ github.run_id }}
+          restore-keys: |
+            it-details-${{ steps.t.outputs.slot }}-
+            it-details-
+
+      - name: Olaszország – PUN letöltése és sűrítése
+        run: python pipeline/it.py --cache cache --out out/it.json
+
+      - name: Feltöltés Cloudflare KV-ba
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: >
+          npx --yes wrangler@4 kv key put it.json --path out/it.json
+          --namespace-id "${{ secrets.KV_NAMESPACE_ID }}" --remote

@@ -29,6 +29,7 @@ object DataRepo {
         "AT" to "/api/at",
         "HU" to "/api/hu",
         "DE" to "/api/de",
+        "IT" to "/api/it",
     )
     private const val MAX_AGE_MS = 10 * 60 * 1000L
 
@@ -98,7 +99,7 @@ object DataRepo {
     private fun cacheFile(ctx: Context, src: String) = File(ctx.filesDir, "data_$src.json")
 
     private fun parseAll(ctx: Context): Pair<List<Site>, Map<String, String?>> {
-        val all = ArrayList<Site>(90000)
+        val all = ArrayList<Site>(140000)
         val gen = HashMap<String, String?>()
         for ((src, _) in SOURCES) {
             val f = cacheFile(ctx, src)
