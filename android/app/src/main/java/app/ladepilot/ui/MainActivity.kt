@@ -1051,6 +1051,7 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
     var routeKw by remember(profile) { mutableStateOf(profile.routeMinKw.toString()) }
     var baseUrl by remember(profile) { mutableStateOf(profile.baseUrl) }
     var adding by remember { mutableStateOf(false) }
+    var tariffGroup by remember { mutableStateOf(if (profile.tariffs.any { it.enabled }) "Bekapcsolt" else "Ausztria") }
     var carSearch by remember { mutableStateOf(false) }
 
     fun d(s: String, def: Double) = s.replace(',', '.').toDoubleOrNull() ?: def
@@ -1146,25 +1147,36 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                 }
             }
         }
-        item { Text("KÁRTYÁIM / TARIFÁIM", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 8.dp)) }
-        items(profile.tariffs, key = { it.id }) { t ->
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 8.dp)) {
+                Text("KÁRTYÁIM / TARIFÁIM", color = Muted, fontSize = 12.sp)
+                Text("Kapcsold be, amid van – a térkép és az útvonaltervező a legolcsóbbal számol.", color = Muted, fontSize = 12.sp)
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Bekapcsolt", "Ausztria", "Németország", "Magyarország", "Több ország", "Saját").forEach { g ->
+                        FilterChip(selected = tariffGroup == g, onClick = { tariffGroup = g }, label = { Text(g) })
+                    }
+                }
+            }
+        }
+        val shown = profile.tariffs.filter { if (tariffGroup == "Bekapcsolt") it.enabled else Tariffs.group(it) == tariffGroup }
+        if (shown.isEmpty()) item {
+            Text(if (tariffGroup == "Bekapcsolt") "Még nincs bekapcsolt kártya – válassz országot fent." else "Nincs ilyen tarifa.", color = Muted, fontSize = 13.sp)
+        }
+        items(shown, key = { it.id }) { t ->
             Card(colors = CardDefaults.cardColors(containerColor = Card1), shape = RoundedCornerShape(14.dp)) {
                 Row(Modifier.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(t.name, fontWeight = FontWeight.SemiBold)
-                        val unit = if (t.country == "HU") "Ft" else "€"
-                        val what = when (t.mode) {
-                            "fixed" -> "${fmtNum(t.value)} $unit/kWh"
-                            "percent" -> "−${fmtNum(t.value)}%"
-                            else -> "−${fmtNum(t.value)} $unit/kWh"
-                        }
-                        Text("${t.country} · ${t.match.ifBlank { "minden töltő" }} · $what" + (if (t.note.isNotBlank()) " · ${t.note}" else ""),
-                            color = Muted, fontSize = 12.sp)
+                        val homeUnit = if (t.country == "HU") "Ft" else "€"
+                        Text(if (t.fee > 0) "${fmtNum(t.fee)} $homeUnit / hó" else "nincs havidíj", color = Muted, fontSize = 12.sp)
+                        Text(t.effectiveRules.joinToString(" · ") { ruleText(it) }, fontSize = 12.sp)
+                        val extra = listOf(t.note, t.source).filter { it.isNotBlank() }.joinToString(" · ")
+                        if (extra.isNotBlank()) Text(extra, color = Muted, fontSize = 11.sp)
                     }
                     Switch(checked = t.enabled, onCheckedChange = { on ->
                         onProfile(profile.copy(tariffs = profile.tariffs.map { if (it.id == t.id) it.copy(enabled = on) else it }))
                     })
-                    if (Tariffs.presets.none { it.id == t.id }) {
+                    if (t.id.startsWith("u-")) {
                         IconButton(onClick = { onProfile(profile.copy(tariffs = profile.tariffs.filter { it.id != t.id })) }) {
                             Icon(Icons.Filled.Delete, "Törlés", tint = Muted)
                         }
@@ -1174,8 +1186,8 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
         }
         item { OutlinedButton(onClick = { adding = true }, modifier = Modifier.fillMaxWidth()) { Text("Saját tarifa hozzáadása") } }
         item {
-            Text("Példa: Tesla-tulajdonosi ár Ausztriában → ország AT, szöveg „Tesla”, fix ár 0,48 €/kWh. " +
-                "Ionity Power → szöveg „IONITY”, fix ár a szerződésed szerint.", color = Muted, fontSize = 12.sp)
+            Text("Ha a kártyád nincs a listában: Saját tarifa, pl. ország AT, szöveg „Tesla”, fix ár 0,48 €/kWh. " +
+                "Az árak tájékoztató jellegűek – a pontos árat a szolgáltató appja mutatja.", color = Muted, fontSize = 12.sp)
         }
         item {
             Column(Modifier.padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1197,6 +1209,23 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
     if (adding) AddTariffDialog(onDismiss = { adding = false }) { t ->
         onProfile(profile.copy(tariffs = profile.tariffs + t)); adding = false
     }
+}
+
+private fun ruleText(r: app.ladepilot.data.TariffRule): String {
+    val unit = if (r.countries == "HU") "Ft" else "€"
+    fun v(x: Double?) = when {
+        x == null -> "–"
+        r.mode == "percent" -> "−${fmtNum(x)}%"
+        r.mode == "discount" -> "−${fmtNum(x)} $unit"
+        else -> "${fmtNum(x)} $unit"
+    }
+    val where = (r.match.ifBlank { "többi" }) + if (r.countries != "*") " (${r.countries})" else ""
+    val price = when {
+        r.ac == r.dc && (r.hpc == null || r.hpc == r.dc) -> v(r.dc)
+        r.hpc != null && r.hpc != r.dc -> "AC ${v(r.ac)} / DC ${v(r.dc)} / HPC ${v(r.hpc)}"
+        else -> "AC ${v(r.ac)} / DC ${v(r.dc)}"
+    }
+    return "$where: $price"
 }
 
 private fun fmtNum(v: Double): String =

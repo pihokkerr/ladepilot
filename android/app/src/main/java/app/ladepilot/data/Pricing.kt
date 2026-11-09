@@ -50,25 +50,29 @@ object Pricing {
         return p?.eurKwh
     }
 
-    fun matches(t: Tariff, site: Site): Boolean {
-        if (!t.enabled) return false
-        if (t.country != "*" && t.country != site.country && t.country != site.src) return false
-        if (t.match.isBlank()) return true
-        return site.op.contains(t.match, true) || site.name.contains(t.match, true)
+    /** The rule of [t] that applies to [site], or null. */
+    fun ruleFor(t: Tariff, site: Site): TariffRule? {
+        if (!t.enabled) return null
+        for (r in t.effectiveRules) {
+            if (!r.appliesTo(site.country) && !r.appliesTo(site.src)) continue
+            if (r.match.isBlank() || site.op.contains(r.match, true) || site.name.contains(r.match, true)) return r
+        }
+        return null
     }
 
-    /** Applies the cheapest matching tariff. */
-    fun applyTariffs(site: Site, eur: Double, tariffs: List<Tariff>): Pair<Double, Tariff?> {
+    /** Applies the cheapest matching tariff for a point of [kw] kW. */
+    fun applyTariffs(site: Site, eur: Double, tariffs: List<Tariff>, kw: Int = site.maxKw): Pair<Double, Tariff?> {
         var best = eur
         var used: Tariff? = null
         for (t in tariffs) {
-            if (!matches(t, site)) continue
-            val v = when (t.mode) {
-                "fixed" -> t.value / site.fx
-                "percent" -> eur * (1 - t.value / 100.0)
-                else -> eur - t.value / site.fx
+            val r = ruleFor(t, site) ?: continue
+            val value = r.valueFor(kw) ?: continue
+            val v = when (r.mode) {
+                "fixed" -> value / site.fx
+                "percent" -> eur * (1 - value / 100.0)
+                else -> eur - value / site.fx
             }.coerceAtLeast(0.0)
-            if (v < best) { best = v; used = t }
+            if (v < best - 1e-9) { best = v; used = t }
         }
         return best to used
     }
@@ -87,7 +91,7 @@ object Pricing {
                 val base = baseEur(site, p, atMillis)
                 val perMin = p.eurMin?.takeIf { it > 0 }
                 if (base == null && perMin == null) continue
-                val (energy, t) = if (base != null) applyTariffs(site, base, profile.tariffs) else (0.0 to null)
+                val (energy, t) = if (base != null) applyTariffs(site, base, profile.tariffs, p.kw) else (0.0 to null)
                 val timePart = (perMin ?: 0.0) * 60.0 / effectiveKw(p.kw)
                 Quote(energy + timePart, energy, base ?: 0.0, t, perMin, p.kw, estimated = timePart > 0 || p.approx, approx = p.approx)
             }
