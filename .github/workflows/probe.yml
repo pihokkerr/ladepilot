@@ -1,0 +1,10 @@
+name: Probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          for u in https://b2b.nap.si/data/b2b.prometej.energyInfrastructureTablePublication https://b2b.nap.si/data/b2b.prometej.energyInfrastructureStatusPublication; do
+            echo "== $u"; curl -s -m 60 -D - -o body.txt "$u" | grep -i "^HTTP\|www-auth\|content-type\|content-length\|location"; head -c 400 body.txt; echo
+          done
