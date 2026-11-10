@@ -99,7 +99,7 @@ data class Profile(
 
 object Countries {
     /** live + priced official data; everything else comes from Open Charge Map */
-    val LIVE = setOf("AT", "DE", "HU", "IT")
+    val LIVE = setOf("AT", "DE", "HU", "IT", "SI")
     val DEFAULT = setOf("AT", "DE", "HU", "IT", "SI", "HR", "SK", "CZ", "CH")
     val NAMES = linkedMapOf(
         "AT" to "Ausztria", "DE" to "Németország", "HU" to "Magyarország", "IT" to "Olaszország",

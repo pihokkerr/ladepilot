@@ -423,6 +423,7 @@ private fun SiteDialog(site: Site, profile: Profile, onAddStop: (() -> Unit)? = 
                         "IT" -> "Forrás: Piattaforma Unica Nazionale (MASE). Ár csak ott, ahol a szolgáltató megadta."
                         "DE" -> if (site.id.startsWith("DE-BNA-")) "Helyszín: Bundesnetzagentur Ladesäulenregister. Ár: a szolgáltató listaára." else "Forrás: Mobilithek (AFIR, CC0). Foglaltság: ha a szolgáltató küldi."
                         "AT" -> "Forrás: E-Control ladestellen.at, élő adat."
+                        "SI" -> "Forrás: NAP Slovenija (MZIE), élő adat."
                         else -> "Forrás: Open Charge Map (CC BY 4.0). Ár: szolgáltatói listaár vagy közösségi adat – becslés."
                     }, color = Color(0xFF5C5C62), fontSize = 11.sp,
                 )
@@ -1158,7 +1159,7 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 8.dp)) {
                 Text("ORSZÁGOK", color = Muted, fontSize = 12.sp)
-                Text("Csak a kiválasztott országok töltői töltődnek le. Élő adat és ár: AT, DE, HU, IT – a többi Open Charge Map (helyszín, teljesítmény, ár csak néhol).",
+                Text("Csak a kiválasztott országok töltői töltődnek le. Élő adat és ár: AT, DE, HU, IT, SI – a többi Open Charge Map (helyszín, teljesítmény, ár csak néhol).",
                     color = Muted, fontSize = 12.sp)
                 var showAll by remember { mutableStateOf(false) }
                 val codes = Countries.NAMES.keys.toList().let { all -> if (showAll) all else all.filter { it in Countries.DEFAULT || it in profile.countries } }
@@ -1226,7 +1227,7 @@ private fun ProfileTab(profile: Profile, onProfile: (Profile) -> Unit) {
                     label = { Text("Adatszerver") }, modifier = Modifier.fillMaxWidth())
                 if (baseUrl.trim() != profile.baseUrl) TextButton(onClick = { onProfile(profile.copy(baseUrl = baseUrl.trim().ifBlank { profile.baseUrl })) }) { Text("Adatszerver mentése") }
                 DataInfo()
-                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek (AFIR, CC0), Bundesnetzagentur Ladesäulenregister, Piattaforma Unica Nazionale (IT), Open Charge Map (HR) · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
+                Text("Adatok: E-Control ladestellen.at, OTPR (ELMOB), Mobilithek (AFIR, CC0), Bundesnetzagentur Ladesäulenregister, Piattaforma Unica Nazionale (IT), NAP Slovenija (SI), Open Charge Map (többi ország) · Járműadatok: Open EV Data (github.com/KilowattApp/open-ev-data) · Térkép: OpenFreeMap, © OpenStreetMap",
                     color = Color(0xFF5C5C62), fontSize = 11.sp)
             }
         }

@@ -63,7 +63,7 @@ def list_price(cc, op, kw):
 
 
 # countries with a better (official, live, priced) source are not taken from OCM
-BETTER = {"AT", "DE", "HU", "IT"}
+BETTER = {"AT", "DE", "HU", "IT", "SI"}
 EUROPE = ["AD", "AL", "BA", "BE", "BG", "CH", "CY", "CZ", "DK", "EE", "ES", "FI", "FR", "GB", "GR", "HR", "IE", "IS",
           "LI", "LT", "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS", "SE", "SI", "SK",
           "SM", "UA", "XK"]
