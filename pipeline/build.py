@@ -38,6 +38,8 @@ import gzip
 import json
 import os
 import sys
+import time
+import urllib.error
 import urllib.request
 
 ECONTROL_BASE = "https://api.e-control.at/charge/1.0"
@@ -65,8 +67,6 @@ def fetch_json(path, api_key):
         headers={"apiKey": api_key, "Referer": REFERER,
                  "Accept": "application/json", "Accept-Encoding": "gzip"},
     )
-    import time
-    import urllib.error
     for attempt in range(4):
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
