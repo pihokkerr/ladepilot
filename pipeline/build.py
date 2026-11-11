@@ -55,16 +55,33 @@ STATUS_CODES = {
 
 
 # ---------------------------------------------------------------- helpers
+class UpstreamDown(Exception):
+    """The data provider answered with a server error several times – keep the old data."""
+
+
 def fetch_json(path, api_key):
     req = urllib.request.Request(
         ECONTROL_BASE + path,
         headers={"apiKey": api_key, "Referer": REFERER,
                  "Accept": "application/json", "Accept-Encoding": "gzip"},
     )
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        raw = resp.read()
-        if resp.headers.get("Content-Encoding") == "gzip":
-            raw = gzip.decompress(raw)
+    import time
+    import urllib.error
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    raw = gzip.decompress(raw)
+            break
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
+            code = getattr(e, "code", None)
+            if code is not None and code < 500 and code != 429:
+                raise                                   # 4xx = our problem (key, referer) – fail loudly
+            print(f"  {path}: attempt {attempt + 1} failed ({e})", file=sys.stderr)
+            if attempt == 3:
+                raise UpstreamDown(f"{path}: {e}")
+            time.sleep(30 * (attempt + 1))
     print(f"  {path}: {len(raw) / 1e6:.1f} MB", file=sys.stderr)
     return json.loads(raw)
 
@@ -381,8 +398,13 @@ def main():
             if not key:
                 sys.exit("ECONTROL_API_KEY is not set")
             print("Downloading E-Control data …", file=sys.stderr)
-            status = fetch_json(ECONTROL_STATUS, key)
-            table = fetch_json(ECONTROL_TABLE, key)
+            try:
+                status = fetch_json(ECONTROL_STATUS, key)
+                table = fetch_json(ECONTROL_TABLE, key)
+            except UpstreamDown as e:
+                # E-Control is temporarily down (e.g. HTTP 507): keep the data from the last good run
+                print(f"::warning::E-Control nem elérhető, a korábbi adat marad: {e}", file=sys.stderr)
+                sys.exit(0)
         ops, sites, n_live = build_at(table, status)
         print(f"  live entries: {n_live}", file=sys.stderr)
         if len(sites) < args.min_sites:
